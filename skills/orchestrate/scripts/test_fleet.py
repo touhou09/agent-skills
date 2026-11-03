@@ -575,8 +575,11 @@ out.second = confirmed(it.key, "opt:0"); fire(); out.afterSend = decisionActs(st
 confirmed(it.key, "opt:0"); fire(); out.lapsed = decisionActs(st, it); out.other = promptActs(pr);
 confirmed(it.key, "opt:1"); out.rearmed = decisionActs(st, it);
 confirmed(pr.key, "approve"); fire(); out.prompt = promptActs(pr);
-process.stdout.write(JSON.stringify(out));"""
-    timer_ctx = ("const vm = require('vm'), timers = [], sb = {process, timers, renderView() {}, document: {addEventListener() {}},"
+// Open takes one click, so it never reaches confirmed(): its result must still replace the note.
+var S = {{state: {{items: [{{...pr, session: "wt-coord", prompt: {{}}}}]}}}}, pollState = () => {{}};
+fetch = async () => ({{status: 200, ok: true, json: async () => ({{ok: true, token: "t"}})}});
+promptAction(pr.key, "open").then(() => {{ out.opened = promptActs(pr); process.stdout.write(JSON.stringify(out)); }});"""
+    timer_ctx = ("const vm = require('vm'), timers = [], sb = {process, timers, renderView() {}, fetch: null, document: {addEventListener() {}},"
            " setTimeout: (f, ms) => timers.push({f, ms}), clearTimeout: (id) => { if (id) timers[id - 1].f = null; }};"
            "vm.runInNewContext(require('fs').readFileSync(0, 'utf8'), sb);")
     got = json.loads(subprocess.run(["node", "-e", timer_ctx], input=js, capture_output=True, text=True, check=True).stdout)
@@ -588,6 +591,7 @@ process.stdout.write(JSON.stringify(out));"""
     assert "Not confirmed within" not in got["other"], "the notice stays on its own row"
     assert "Not confirmed within" not in got["rearmed"] and "Confirm " in got["rearmed"], "a new first click clears the notice"
     assert "Not confirmed within" in got["prompt"], "a permission prompt's Approve lapses the same way"
+    assert "Opened in Orca." in got["opened"] and "Not confirmed within" not in got["opened"], got["opened"]
 
     # Automations and shared resources render escaped; an overdue or failed automation is flagged and counted.
     js = f"""{helpers}

@@ -289,6 +289,7 @@ function confirmed(key, action) {
 async function promptAction(key, action) {
   const it = ((S.state || {}).items || []).find((i) => i.key === key);
   if (!it || (action !== "open" && !confirmed(key, action))) return;
+  F.armLapsed = null;  // Open skips confirmed(): its result must not sit under an old lapse note
   F.prompt[key] = { busy: true }; renderView();
   let out;
   try { out = await fleetPost("/api/fleet/prompt", { session: it.session, prompt: it.prompt, action }); } catch (err) { out = { ok: false, reason: String(err.message || err) }; }
