@@ -564,6 +564,31 @@ process.stdout.write(JSON.stringify(out));"""
     # A decision says how to answer it in the coordinator's terminal too, with the recommended option filled in.
     assert "<span class=\"mono\">d1: &lt;i&gt;CSV&lt;/i&gt;</span>" in html, html
 
+    # A first click arms the button for longer than a remote browser's lag; the second click inside that window sends.
+    # A window that lapses unclicked says so on that row instead of silently turning back.
+    js = f"""{helpers}
+{(assets / "fleet.js").read_text()}
+const st = {{sessions: []}}, it = {json.dumps(hostile)}, pr = {{key: "prompt:p1", answers: ["approve", "deny"]}};
+const fire = () => {{ const t = timers.at(-1); if (t.f) t.f(); }}, out = {{}};
+out.first = confirmed(it.key, "opt:0"); out.ms = timers.at(-1).ms; out.armed = decisionActs(st, it);
+out.second = confirmed(it.key, "opt:0"); fire(); out.afterSend = decisionActs(st, it);
+confirmed(it.key, "opt:0"); fire(); out.lapsed = decisionActs(st, it); out.other = promptActs(pr);
+confirmed(it.key, "opt:1"); out.rearmed = decisionActs(st, it);
+confirmed(pr.key, "approve"); fire(); out.prompt = promptActs(pr);
+process.stdout.write(JSON.stringify(out));"""
+    timer_ctx = ("const vm = require('vm'), timers = [], sb = {process, timers, renderView() {}, document: {addEventListener() {}},"
+           " setTimeout: (f, ms) => timers.push({f, ms}), clearTimeout: (id) => { if (id) timers[id - 1].f = null; }};"
+           "vm.runInNewContext(require('fs').readFileSync(0, 'utf8'), sb);")
+    got = json.loads(subprocess.run(["node", "-e", timer_ctx], input=js, capture_output=True, text=True, check=True).stdout)
+    assert got["first"] is False and got["second"] is True, got
+    assert got["ms"] >= 30000, got["ms"]
+    assert "Confirm " in got["armed"] and "Not confirmed within" not in got["armed"], got["armed"]
+    assert "Not confirmed within" not in got["afterSend"], "a sent answer clears its timer: no lapse notice later"
+    assert "Not confirmed within" in got["lapsed"] and "Confirm " not in got["lapsed"], got["lapsed"]
+    assert "Not confirmed within" not in got["other"], "the notice stays on its own row"
+    assert "Not confirmed within" not in got["rearmed"] and "Confirm " in got["rearmed"], "a new first click clears the notice"
+    assert "Not confirmed within" in got["prompt"], "a permission prompt's Approve lapses the same way"
+
     # Automations and shared resources render escaped; an overdue or failed automation is flagged and counted.
     js = f"""{helpers}
 {take("hhmm")}

@@ -267,15 +267,21 @@ function promptActs(it) {
   const msg = !r || r.busy ? "" : r.ok ? (r.action === "open" ? "Opened in Orca." : "Sent; the dialog closed.")
     : r.typed ? `Pressed ${r.key}, but not confirmed (${r.reason}). Check the terminal.` : `Not sent: ${r.reason}.`;
   return `<div class="prompt-acts">${btn("approve", "Approve", "check")}${btn("deny", "Deny", "x")}${btn("open", "Open terminal", "arrow")}
-    ${r && r.busy ? '<span class="muted">Checking the screen…</span>' : msg ? `<span class="toned tone-${r.ok ? "good" : r.typed ? "warn" : "bad"}">${esc(msg)}</span>` : ""}</div>`;
+    ${r && r.busy ? '<span class="muted">Checking the screen…</span>' : lapsedNote(it.key) || (msg ? `<span class="toned tone-${r.ok ? "good" : r.typed ? "warn" : "bad"}">${esc(msg)}</span>` : "")}</div>`;
 }
 
-// True on the second click of the same button within 5 s; the first click only arms it.
+// Long enough for a remote browser (redraw and click lag) to show "Confirm …" and take the second click.
+const CONFIRM_MS = 30e3;
+const lapsedNote = (key) => F.armLapsed === key ? `<span class="toned tone-warn">Not confirmed within ${CONFIRM_MS / 1e3} s; click again.</span>` : "";
+
+// True on the second click of the same button within CONFIRM_MS; the first click only arms it. A window that lapses
+// leaves a note on its row (F.armLapsed), so an unconfirmed click does not read as "nothing happened".
 function confirmed(key, action) {
+  clearTimeout(F.armTimer);
+  F.armLapsed = null;
   if (F.arm && F.arm.key === key && F.arm.action === action) { F.arm = null; return true; }
   F.arm = { key, action };
-  clearTimeout(F.armTimer);
-  F.armTimer = setTimeout(() => { F.arm = null; renderView(); }, 5000);
+  F.armTimer = setTimeout(() => { F.arm = null; F.armLapsed = key; renderView(); }, CONFIRM_MS);
   renderView();
   return false;
 }
@@ -307,7 +313,7 @@ function decisionActs(st, it) {
     <div class="prompt-acts"><input id="decide-${esc(it.decision)}" data-decide-input="${esc(it.key)}" class="search" maxlength="1900" autocomplete="off"
         placeholder="Or type an answer" value="${esc(F.draft[it.key] || "")}" ${off}>${chip("text", `${icon("send")}${armed === "text" ? "Confirm send" : "Send"}`)}
       ${r && r.busy ? '<span class="muted">Recording…</span>' : line ? `<span class="muted ellipsis">answers <span class="mono">${esc(line)}</span></span>`
-        : msg ? `<span class="toned tone-${r.ok ? "good" : "bad"}">${esc(msg)}</span>${r.ok ? "" : `<button class="chip" data-copy="${esc(r.line)}">${icon("copy")}Copy</button>`}` : ""}</div></div>`;
+        : lapsedNote(it.key) || (msg ? `<span class="toned tone-${r.ok ? "good" : "bad"}">${esc(msg)}</span>${r.ok ? "" : `<button class="chip" data-copy="${esc(r.line)}">${icon("copy")}Copy</button>`}` : "")}</div></div>`;
 }
 
 async function decideAction(key, action) {
