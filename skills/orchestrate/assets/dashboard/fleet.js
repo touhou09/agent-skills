@@ -305,7 +305,7 @@ async function promptAction(key, action) {
 // A decision registered with `orch decide`: one click on an option, or Send with a typed answer, answers it. The result
 // takes the buttons' place, with Undo for UNDO_MS. The server records the answer and closes the decision, and types
 // "decision <id>: <answer>" into the orchestrator's or lead's terminal on a collect after the undo window (DECISION_UNDO_S).
-const UNDO_MS = 10e3;
+const UNDO_MS = 10e3, REOPEN_MS = 60e3;
 
 function decisionActs(st, it) {
   const r = F.decide[it.key] || {}, opts = it.options || [];
@@ -336,9 +336,12 @@ function withAnswered(st) {
   const have = new Set((st.items || []).map((i) => i.key));
   const kept = Object.entries(F.decide).filter(([k, r]) => r.item && !have.has(k) && (Date.now() < r.until || r.undoBusy || r.busy)).map(([, r]) => r);
   if (!kept.length) return st;
-  const items = (st.items || []).slice();
-  kept.sort((a, b) => a.idx - b.idx).forEach((r) => items.splice(Math.min(r.idx, items.length), 0, r.item));
-  return { ...st, items };
+  const items = (st.items || []).slice(), counts = { ...st.counts };
+  kept.sort((a, b) => a.idx - b.idx).forEach((r) => {
+    items.splice(Math.min(r.idx, items.length), 0, r.item);
+    counts[r.item.type] = (counts[r.item.type] || 0) + 1;  // so the Inbox's type filter stays on it
+  });
+  return { ...st, items, counts };
 }
 
 async function decideAction(key, action) {
@@ -367,8 +370,9 @@ async function undoAction(key) {
   r.undoBusy = true; renderView();
   let out;
   try { out = await fleetPost("/api/fleet/reopen", { decision: r.item.decision }); } catch (err) { out = { ok: false, reason: String(err.message || err) }; }
-  // A refusal stays on screen for another UNDO_MS, even when it came back after the window.
-  F.decide[key] = out.ok ? { item: r.item, idx: r.idx, until: Date.now() + UNDO_MS } : { ...r, undoBusy: false, undoErr: out.reason, until: Date.now() + UNDO_MS };
+  // A refusal stays on screen for another UNDO_MS, even when it came back after the window. An undone row waits for a
+  // collect to list it open again. ponytail: a fixed REOPEN_MS, not "until listed", so a decision dropped meanwhile does not stay forever.
+  F.decide[key] = out.ok ? { item: r.item, idx: r.idx, until: Date.now() + REOPEN_MS } : { ...r, undoBusy: false, undoErr: out.reason, until: Date.now() + UNDO_MS };
   setTimeout(renderView, UNDO_MS + 100);
   renderView();
 }

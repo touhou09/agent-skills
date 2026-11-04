@@ -651,6 +651,14 @@ fetch = async (url, o) => {{ if (o && o.body) posts.push([url, JSON.parse(o.body
   await decideAction(u.key, "opt:0"); S.state = {{generated_at: "g6", items: []}}; await undoAction(u.key);
   fetch = async (url, o) => ({{status: 409, ok: false, json: async () => ({{ok: false, reason: "d6 is dropped"}})}});
   await decideAction(u.key, "opt:1"); out.again = keys(S.state); out.againRow = decisionActs(S.state, u);
+  // An undone row waits for a late collect past UNDO_MS; a kept row counts in its type, so an Inbox filter on
+  // decisions does not fall back to All when the last open one is answered.
+  const t = {{...w, key: "decision:d7", decision: "d7"}};
+  S.state = {{generated_at: "g7", counts: {{decision: 1}}, items: [t]}};
+  fetch = async (url, o) => ({{status: 200, ok: true, json: async () => ({{ok: true, token: "t"}})}});
+  await decideAction(t.key, "opt:0"); S.state = {{generated_at: "g8", counts: {{}}, items: []}};
+  out.counted = withAnswered(S.state).counts;
+  await undoAction(t.key); now += 10001; out.lateCollect = keys(S.state);
   process.stdout.write(JSON.stringify(out));
 }})();"""
     got = json.loads(subprocess.run(["node", "-e", timer_ctx], input=js, capture_output=True, text=True, check=True).stdout)
@@ -663,16 +671,18 @@ fetch = async (url, o) => {{ if (o && o.body) posts.push([url, JSON.parse(o.body
     assert 'data-decide="opt:' in got["y"] and "기록됨" not in got["y"], "undone: the buttons come back"
     assert got["keptAfterUndo"] == got["kept"], "the undone row stays until the server lists it open again"
     assert "data-undo=" not in got["late"], "after UNDO_MS there is no undo"
-    assert got["gone"] == [], "nor a row the server no longer lists"
+    assert got["gone"] == ["decision:d2"], "nor an answered row the server no longer lists; the undone one waits for a collect"
     assert "✗ 기록 실패: d4 is already done" in got["failed"] and 'data-decide="opt:' in got["failed"], got["failed"]
     assert got["text"] == [decide, {"decision": "d4", "answer": "maybe"}], "a typed answer sends on one click too"
     assert "기록됨" in got["stale"] and "data-undo=" not in got["stale"] and 'data-decide="opt:' not in got["stale"], got["stale"]
     assert 'data-decide="opt:' in got["newer"] and "기록됨" not in got["newer"], got["newer"]
-    assert got["waiting"] == ["decision:d5"] and got["refused"] == ["decision:d5"], (got["waiting"], got["refused"])
+    assert "decision:d5" in got["waiting"] and "decision:d5" in got["refused"], (got["waiting"], got["refused"])
     assert "✗ 되돌리기 실패: d5 already reached" in got["refusedRow"], got["refusedRow"]
     assert got["heldRedraws"] and got["quietAfter"], (got["heldRedraws"], got["quietAfter"])
     assert 'data-decide="opt:' not in got["waitingRow"], "no buttons while an undo is in flight"
-    assert "decision:d6" in got["again"] and"✗ 기록 실패: d6 is dropped" in got["againRow"], (got["again"], got["againRow"])
+    assert got["counted"].get("decision", 0) >= 1, got["counted"]  # the other rows this run keeps count too
+    assert "decision:d7" in got["lateCollect"], got["lateCollect"]
+    assert "decision:d6" in got["again"] and "✗ 기록 실패: d6 is dropped" in got["againRow"], (got["again"], got["againRow"])
 
     # Automations and shared resources render escaped; an overdue or failed automation is flagged and counted.
     js = f"""{helpers}
