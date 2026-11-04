@@ -2359,7 +2359,7 @@ def decision_close(did, status, answer=None, relay=False):
         if d.get("status") == "open":
             d.update(status=status, answer=mask(answer, DECISION_ANSWER_MAX), closed_at=iso(utcnow()))
             if relay:
-                d["delivered"] = False
+                d.update(delivered=False, rev=os.urandom(6).hex())  # names this answer for the page's undo
         elif d.get("status") == "done" and d.get("delivered") is False and not relay:
             d.update(delivered=True) if status == "done" else d.update(status=status)
         elif d.get("status") == "done" and status == "dropped" and not relay:
@@ -2428,24 +2428,23 @@ def decision_answer(did, answer):
     except ValueError as e:
         return 409, {"ok": False, "reason": str(e)}
     # at: when it was recorded. The page's undo sends it back, and the page holds "recorded" until a snapshot after it.
-    return 200, {"ok": True, "recorded": True, "delivered": False, "at": d["closed_at"],
+    return 200, {"ok": True, "recorded": True, "delivered": False, "at": d["closed_at"], "rev": d["rev"],
                  "line": f"decision {did}: {mask(answer, DECISION_ANSWER_MAX)}"}
 
 
-def decision_reopen(did, answered_at=None):
+def decision_reopen(did, rev=None):
     """The page's undo: an answer given on the page that has not been typed into the coordinator's terminal is taken
-    back, and the decision is open again. Under RELAY_LOCK, so it never races a relay of the same answer. answered_at
-    (decision_answer's `at`) names the answer: a retried undo never takes back a later answer from another tab.
-    ponytail: second resolution; two answers to one decision inside one second would match."""
+    back, and the decision is open again. Under RELAY_LOCK, so it never races a relay of the same answer. rev
+    (decision_answer's) names the answer: a retried undo never takes back a later answer from another tab."""
     def reopen(store):
         d = store.get("decisions", {}).get(did)
         if not d:
             raise ValueError(f"no decision {did}")
-        if answered_at and d.get("closed_at") != answered_at:
+        if rev and d.get("rev") != rev:
             raise ValueError(f"{did} was answered again since")
         if d.get("status") != "done" or d.get("delivered") is not False:
             raise ValueError(f"{did} already reached the orchestrator or lead" if d.get("delivered") else f"{did} is {d.get('status')}")
-        for k in ("answer", "closed_at", "delivered"):
+        for k in ("answer", "closed_at", "delivered", "rev"):
             d.pop(k, None)
         d["status"] = "open"
     try:

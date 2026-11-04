@@ -298,7 +298,9 @@ function confirmed(key, action) {
 async function promptAction(key, action) {
   const it = ((S.state || {}).items || []).find((i) => i.key === key);
   if (!it || (action !== "open" && !confirmed(key, action))) return;
-  F.armLapsed.delete(key);  // Open skips confirmed(): its result must not sit under an old lapse note
+  // Open skips confirmed(): its result must not sit under an old lapse note or an armed Approve.
+  F.armLapsed.delete(key);
+  if (action === "open" && F.arm[key]) { clearTimeout(F.arm[key].timer); delete F.arm[key]; }
   F.prompt[key] = { busy: true }; renderView();
   let out;
   try { out = await fleetPost("/api/fleet/prompt", { session: it.session, prompt: it.prompt, action }); } catch (err) { out = { ok: false, reason: String(err.message || err) }; }
@@ -364,7 +366,7 @@ async function decideAction(key, action) {
   const answer = action === "text" ? (F.draft[key] || "").trim() : ((it.options || [])[+action.slice(4)] || {}).label;
   if (!answer) return;
   // A row kept after an undo (no poll lists it open yet) stays kept through this request and a refusal.
-  const row = prev.item ? { item: prev.item, idx: prev.idx } : {};
+  const row = prev.item ? { item: prev.item, idx: prev.idx, gen: prev.gen } : {};
   const mine = F.decide[key] = { busy: true, ...row, until: prev.until }; renderView();
   // The undo window counts from the send: the server records after it, so Undo ends before its relay (DECISION_UNDO_S).
   const sentAt = Date.now();
@@ -384,7 +386,7 @@ async function undoAction(key) {
   r.undoBusy = true; renderView();
   let out;
   // No reply at all (the network) may not have reached the server: Undo stays for the rest of its window.
-  try { out = await fleetPost("/api/fleet/reopen", { decision: r.item.decision, at: r.at }); } catch (err) { out = { ok: false, reason: String(err.message || err), retry: true }; }
+  try { out = await fleetPost("/api/fleet/reopen", { decision: r.item.decision, rev: r.rev }); } catch (err) { out = { ok: false, reason: String(err.message || err), retry: true }; }
   if (F.decide[key] !== r) return;  // dismissed meanwhile
   // A refusal stays on screen for another UNDO_MS, even when it came back after the window. An undone row waits for a
   // collect to list it open again. ponytail: a fixed REOPEN_MS, not "until listed", so a decision dropped meanwhile does not stay forever.

@@ -488,10 +488,15 @@ assert fleet.relay_decisions(ok) == [] and ok.calls == [], "inside the undo wind
 world.worktrees[0]["agents"][0]["state"] = "working"
 f.tick(force=True)
 # Undo inside the window: the decision is open again with no answer, back in Needs you; a second undo is refused.
-assert out["at"] == saved["closed_at"], out  # the answer's own time: an undo names the answer it takes back
-assert fleet.decision_reopen(lost["id"], "2000-01-01T00:00:00Z")[0] == 409, "an undo of another answer (a second tab) is refused"
-code, out = fleet.decision_reopen(lost["id"], saved["closed_at"])
+assert out["at"] == saved["closed_at"] and out["rev"] == saved["rev"], out  # an undo names the answer it takes back
+first = out["rev"]
+assert fleet.decision_reopen(lost["id"], "other")[0] == 409, "an undo of another answer (a second tab) is refused"
+code, out = fleet.decision_reopen(lost["id"], first)
 assert code == 200 and out["ok"] and out["at"] >= saved["closed_at"], out  # the page releases its kept row on a later snapshot
+# Answered again (another tab, the same second): a retry of the first undo, whose reply was lost, must not take it back.
+again = fleet.decision_answer(lost["id"], "No")[1]
+assert again["rev"] != first and fleet.decision_reopen(lost["id"], first)[0] == 409
+assert fleet.decision_reopen(lost["id"], again["rev"])[0] == 200
 # A retry skips a coordinator whose own terminal works; another agent working in the same session does not hold it.
 two = {"phase": "working", "terminals": [{"handle": "h1", "pane": "p1"}, {"handle": "h2", "pane": "p2"}],
        "agents": [{"pane": "p1", "state": "done"}, {"pane": "p2", "state": "working"}]}
@@ -607,6 +612,9 @@ promptAction(pr.key, "open").then(async () => {{
   out.sent = await answer({{ok: true}});
   out.unconfirmed = await answer({{ok: false, typed: true, key: "1", reason: "dialog still shown"}});
   out.failed = await answer({{ok: false, reason: "orca terminal show failed"}});
+  // Open terminal after a first Approve click: Open's result shows, not the armed Approve.
+  fetch = async () => ({{status: 200, ok: true, json: async () => ({{token: "t", ok: true}})}});
+  confirmed(pr.key, "approve"); await promptAction(pr.key, "open"); out.openAfterArm = promptActs(pr);
   process.stdout.write(JSON.stringify(out)); }});"""
     timer_ctx = ("const vm = require('vm'), timers = [], handlers = {}, sb = {process, timers, handlers, renderView() {}, fetch: null,"
            " document: {addEventListener(t, f) { handlers[t] = f; }},"
@@ -626,6 +634,7 @@ promptAction(pr.key, "open").then(async () => {{
     assert 'class="decided tone-good"' in got["opened"] and "Not confirmed within" not in got["opened"], got["opened"]
     assert 'class="decided tone-good"' in got["sent"] and "✓ Approve 보냄" in got["sent"], got["sent"]
     assert 'class="decided tone-warn"' in got["unconfirmed"] and "1 을 눌렀지만" in got["unconfirmed"], got["unconfirmed"]
+    assert "Orca 에서 터미널을 열었다" in got["openAfterArm"] and "Confirm " not in got["openAfterArm"], got["openAfterArm"]
     assert 'class="decided tone-bad"' in got["failed"] and "✗ 보내지 못함: orca terminal show failed" in got["failed"], got["failed"]
 
     # A decision's option records on one click, each decision on its own. The result takes the buttons' place and stays
@@ -733,11 +742,15 @@ fetch = async (url, o) => {{ if (o && o.body) posts.push([url, JSON.parse(o.body
   const k = {{...w, key: "decision:d14", decision: "d14"}}, sent = [];
   S.state = {{generated_at: "2026-01-01T00:00:13Z", items: [k]}};
   fetch = async (url, o) => {{ if (o && o.body) sent.push(JSON.parse(o.body));
-    return {{status: 200, ok: true, json: async () => ({{ok: true, token: "t", at: "2026-01-01T00:00:15Z"}})}}; }};
+    return {{status: 200, ok: true, json: async () => ({{ok: true, token: "t", at: "2026-01-01T00:00:15Z", rev: "r14"}})}}; }};
   await decideAction(k.key, "opt:0"); now += 10001;
   out.preAnswer = decisionActs({{generated_at: "2026-01-01T00:00:14Z", items: [k]}}, k);
   out.postAnswer = decisionActs({{generated_at: "2026-01-01T00:00:16Z", items: [k]}}, k);
   now -= 10001; await undoAction(k.key); out.undoBody = sent.at(-1);
+  // Answering again after that undo, lost to the network: the row keeps the undo's time, so an old poll does not release it.
+  const undoneGen = F.decide[k.key].gen;
+  fetch = async (url, o) => {{ if (o && o.body) throw new Error("Failed to fetch"); return {{status: 200, ok: true, json: async () => ({{token: "t"}})}}; }};
+  await decideAction(k.key, "opt:1"); out.genKept = F.decide[k.key].gen === undoneGen && !!F.decide[k.key].item;
   process.stdout.write(JSON.stringify(out));
 }})();"""
     got = json.loads(subprocess.run(["node", "-e", timer_ctx], input=js, capture_output=True, text=True, check=True).stdout)
@@ -767,7 +780,8 @@ fetch = async (url, o) => {{ if (o && o.body) posts.push([url, JSON.parse(o.body
     assert "decision:d7" not in got["closedElsewhere"], got["closedElsewhere"]
     assert "decision:d11" in got["outOfOrder"], got["outOfOrder"]
     assert "기록됨" in got["preAnswer"] and 'data-decide="opt:' in got["postAnswer"], (got["preAnswer"], got["postAnswer"])
-    assert got["undoBody"] == {"decision": "d14", "at": "2026-01-01T00:00:15Z"}, got["undoBody"]
+    assert got["undoBody"] == {"decision": "d14", "rev": "r14"}, got["undoBody"]
+    assert got["genKept"], "a refused re-answer keeps the undone row's time"
     assert "decision:d12" in got["beforeUndoSnapshot"] and "decision:d12" not in got["afterUndoSnapshot"], (got["beforeUndoSnapshot"], got["afterUndoSnapshot"])
     assert "decision:d11" not in got["releasedQuietly"] and got["untilAfterSend"] == 10000, (got["releasedQuietly"], got["untilAfterSend"])
     assert "decision:d10" not in got["lateAfterDismiss"], got["lateAfterDismiss"]
