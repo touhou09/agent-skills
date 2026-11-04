@@ -957,7 +957,7 @@ function renderView() {
   const view = $("#view"), st = S.state;
   const focusId = document.activeElement?.id, sel = document.activeElement?.selectionStart;
   if (!st) view.innerHTML = `<div class="loading">${S.down ? (isFleet() ? "The fleet collector is not running (ORCH_FLEET=off?) or the server is down." : "Cannot reach the dashboard server.") : "Loading…"}</div>`;
-  else if (isFleet()) { view.innerHTML = FLEET_VIEWS[S.section](st); applyFreshness(); }
+  else if (isFleet()) { view.innerHTML = FLEET_VIEWS[S.section](withAnswered(st)); applyFreshness(); }
   else { view.innerHTML = VIEWS[S.section](st); redrawCharts(); applyFreshness(); }
   if (focusId && $("#" + focusId)) { const el = $("#" + focusId); el.focus(); if (sel != null && el.setSelectionRange) el.setSelectionRange(sel, sel); }
   const waiting = isFleet() && st ? (st.items || []).length : 0;

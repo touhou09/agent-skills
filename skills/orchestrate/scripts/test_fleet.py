@@ -471,33 +471,44 @@ assert got[lost["id"]]["session"] == st["root"] and got[lost["id"]]["handle"] is
 assert st["counts"]["decision"] == 2
 fleet.decision_close(d["id"], "done", "Yes")
 assert [i["decision"] for i in items(f.tick(force=True), "decision")] == [lost["id"]]
-# Answering on the page records the answer and closes the decision first; typing it into the coordinator's terminal is
-# best effort. A busy coordinator (the usual case) leaves it undelivered, and a later collect relays it once it is idle.
+# Answering on the page records the answer and closes the decision; nothing is typed yet. The relay waits out the page's
+# undo window (DECISION_UNDO_S), so an undo never has to take back a line already in the coordinator's terminal.
 busy = Sender((False, "title shows the agent is busy"))
-code, out = fleet.decision_answer(lost["id"], "  Yes,\n  ship it ", sender=busy)
-assert code == 200 and out["ok"] and not out["delivered"] and out["reason"] == "title shows the agent is busy", out
-assert busy.calls == [("term_coord", f"decision {lost['id']}: Yes, ship it")], busy.calls  # the root's terminal
+ok = Sender((True, None))
+code, out = fleet.decision_answer(lost["id"], "  Yes,\n  ship it ")
+assert code == 200 and out["ok"] and not out["delivered"] and out["line"] == f"decision {lost['id']}: Yes, ship it", out
 saved = json.loads((state_dir / "decisions.json").read_text())["decisions"][lost["id"]]
 assert saved["status"] == "done" and saved["answer"] == "Yes, ship it" and saved["delivered"] is False, saved
 assert not items(f.tick(force=True), "decision")
-assert fleet.decision_answer(lost["id"], "No", sender=busy)[0] == 409  # a second tab, or a double click
-assert fleet.decision_answer(d["id"], "   ", sender=busy)[0] == 400
-assert fleet.relay_decisions(busy) == [] and len(busy.calls) == 1  # its session is working: no screen read at all
+assert fleet.decision_answer(lost["id"], "No")[0] == 409  # a second tab, or a double click
+assert fleet.decision_answer(d["id"], "   ")[0] == 400
+world.worktrees[0]["agents"][0]["state"] = "done"
+f.tick(force=True)
+assert fleet.relay_decisions(ok) == [] and ok.calls == [], "inside the undo window nothing is typed, even to an idle coordinator"
+world.worktrees[0]["agents"][0]["state"] = "working"
+f.tick(force=True)
+# Undo inside the window: the decision is open again with no answer, back in Needs you; a second undo is refused.
+assert fleet.decision_reopen(lost["id"]) == (200, {"ok": True})
+saved = json.loads((state_dir / "decisions.json").read_text())["decisions"][lost["id"]]
+assert saved["status"] == "open" and "answer" not in saved and "delivered" not in saved and "closed_at" not in saved, saved
+assert [i["decision"] for i in items(f.tick(force=True), "decision")] == [lost["id"]]
+assert fleet.decision_reopen(lost["id"])[0] == 409 and fleet.decision_reopen("d99")[0] == 409
+assert fleet.decision_answer(lost["id"], "Yes, ship it")[0] == 200
+fleet.DECISION_UNDO_S = 0  # the window has passed
+assert fleet.relay_decisions(busy) == [] and busy.calls == []  # its session is working: no screen read at all
 world.worktrees[0]["agents"][0]["state"] = "done"  # the coordinator's turn ends
 f.tick(force=True)
-assert fleet.relay_decisions(busy) == [] and len(busy.calls) == 2  # idle session, but the title still says busy
+assert fleet.relay_decisions(busy) == [] and len(busy.calls) == 1  # idle session, but the title still says busy
+assert busy.calls == [("term_coord", f"decision {lost['id']}: Yes, ship it")], busy.calls  # the root's terminal
 assert fleet.pending_relays()[0]["id"] == lost["id"]
 unconfirmed = Sender((False, "sent, but the screen does not show it was taken"))
 assert fleet.relay_decisions(unconfirmed) == [lost["id"]]  # typed: a retry could send it twice
-assert fleet.pending_relays() == [] and fleet.relay_decisions(ok := Sender((True, None))) == [] and ok.calls == []
-# An idle coordinator gets the line at once; the send box itself still refuses a busy terminal.
-now_d = fleet.decision_add("Now?", options=["Yes"], handle="term_coord")
-code, out = fleet.decision_answer(now_d["id"], "Yes", sender=ok)
-assert out["delivered"] and ok.calls == [("term_coord", f"decision {now_d['id']}: Yes")], (out, ok.calls)
-assert fleet.send("wt-coord", "x", sender=busy)[1]["ok"] is False
+assert fleet.pending_relays() == [] and fleet.relay_decisions(ok) == [] and ok.calls == []
+assert fleet.decision_reopen(lost["id"])[0] == 409, "an answer already typed into the terminal is not taken back"
+assert fleet.send("wt-coord", "x", sender=busy)[1]["ok"] is False  # the send box itself still refuses a busy terminal
 # The coordinator's own `done` stops a pending relay; `drop` cancels it; an answer typed elsewhere is never relayed.
 for did, verb in ((fleet.decision_add("A", handle="term_coord")["id"], "done"), (fleet.decision_add("B", handle="term_coord")["id"], "drop")):
-    fleet.decision_answer(did, "x", sender=busy)
+    fleet.decision_answer(did, "x")
     r = subprocess.run([sys.executable, str(pathlib.Path(__file__).parent / "prog.py"), "decide", verb, did],
                        capture_output=True, text=True, env={**env, "ORCH_FLEET_STATE": str(state_dir)})
     assert r.returncode == 0, r.stderr
@@ -564,16 +575,18 @@ process.stdout.write(JSON.stringify(out));"""
     # A decision says how to answer it in the coordinator's terminal too, with the recommended option filled in.
     assert "<span class=\"mono\">d1: &lt;i&gt;CSV&lt;/i&gt;</span>" in html, html
 
-    # A first click arms the button for longer than a remote browser's lag; the second click inside that window sends.
-    # A window that lapses unclicked says so on that row instead of silently turning back.
+    # A permission prompt's Approve or Deny (a key press in a terminal, which no undo takes back) still takes a second
+    # click, inside a window longer than a remote browser's lag. A window that lapses unclicked says so on that row.
     js = f"""{helpers}
 {(assets / "fleet.js").read_text()}
 const st = {{sessions: []}}, it = {json.dumps(hostile)}, pr = {{key: "prompt:p1", answers: ["approve", "deny"]}};
+const p2 = {{key: "prompt:p2", answers: ["approve", "deny"]}};
 const fire = () => {{ const t = timers.at(-1); if (t.f) t.f(); }}, out = {{}};
-out.first = confirmed(it.key, "opt:0"); out.ms = timers.at(-1).ms; out.armed = decisionActs(st, it);
-out.second = confirmed(it.key, "opt:0"); fire(); out.afterSend = decisionActs(st, it);
-confirmed(it.key, "opt:0"); fire(); out.lapsed = decisionActs(st, it); out.other = promptActs(pr);
-confirmed(it.key, "opt:1"); out.rearmed = decisionActs(st, it);
+out.first = confirmed(pr.key, "approve"); out.ms = timers.at(-1).ms; out.armed = promptActs(pr);
+out.second = confirmed(pr.key, "approve"); fire(); out.afterSend = promptActs(pr);
+confirmed(pr.key, "approve"); fire(); out.lapsed = promptActs(pr); out.other = promptActs(p2);
+confirmed(pr.key, "deny"); out.rearmed = promptActs(pr);
+out.decision = decisionActs(st, it);
 confirmed(pr.key, "approve"); fire(); out.prompt = promptActs(pr);
 // Open takes one click, so it never reaches confirmed(): its result must still replace the note.
 var S = {{state: {{items: [{{...pr, session: "wt-coord", prompt: {{}}}}]}}}}, pollState = () => {{}};
@@ -590,31 +603,48 @@ promptAction(pr.key, "open").then(() => {{ out.opened = promptActs(pr); process.
     assert "Not confirmed within" in got["lapsed"] and "Confirm " not in got["lapsed"], got["lapsed"]
     assert "Not confirmed within" not in got["other"], "the notice stays on its own row"
     assert "Not confirmed within" not in got["rearmed"] and "Confirm " in got["rearmed"], "a new first click clears the notice"
-    assert "Not confirmed within" in got["prompt"], "a permission prompt's Approve lapses the same way"
+    assert "Not confirmed within" in got["prompt"], "a lapse after a re-arm says so again"
+    assert "Confirm " not in got["decision"], "a decision is never armed"
     assert "Opened in Orca." in got["opened"] and "Not confirmed within" not in got["opened"], got["opened"]
 
-    # Several open decisions each keep their own arm: arming one does not disarm another, and each second click records
-    # its own answer. The armed preview sits on the option row, not beside Send, which an empty box makes a no-op.
-    other = {**hostile, "key": "decision:d2", "decision": "d2", "options": [{"label": "yes"}, {"label": "no"}]}
+    # A decision's option records on one click, each decision on its own. The result takes the buttons' place and stays
+    # through the redraws after the server drops the closed decision (withAnswered keeps the row); Undo, for UNDO_MS,
+    # reopens it. A refused answer says why where the buttons are, and they stay so it can be tried again.
+    two = lambda n, a, b: {**hostile, "key": f"decision:d{n}", "decision": f"d{n}", "options": [{"label": a}, {"label": b}]}
     js = f"""{helpers}
 {(assets / "fleet.js").read_text()}
-const st = {{sessions: []}}, x = {json.dumps(hostile)}, y = {json.dumps(other)}, posts = [], out = {{}};
-var S = {{state: {{items: [x, y]}}}}, pollState = () => {{}};
-fetch = async (url, o) => {{ if (o && o.body) posts.push(JSON.parse(o.body)); return {{status: 200, ok: true, json: async () => ({{ok: true, token: "t", delivered: true}})}}; }};
+const st = {{sessions: []}}, x = {json.dumps(hostile)}, y = {json.dumps(two(2, "yes", "no"))}, z = {json.dumps(two(3, "a", "b"))};
+const w = {json.dumps(two(4, "p", "q"))}, posts = [], out = {{}}, keys = (s) => withAnswered(s).items.map((i) => i.key);
+var S = {{state: {{items: [x, y, z]}}}}, pollState = () => {{}};
+let now = 1e9, reply = {{ok: true, recorded: true, delivered: false}};
+Date.now = () => now;
+fetch = async (url, o) => {{ if (o && o.body) posts.push([url, JSON.parse(o.body)]);
+  return {{status: reply.code || 200, ok: !reply.code, json: async () => ({{token: "t", ...reply}})}}; }};
 (async () => {{
-  await decideAction(x.key, "opt:0"); await decideAction(y.key, "opt:1");
-  out.x = decisionActs(st, x); out.y = decisionActs(st, y);
-  await decideAction(x.key, "opt:0"); await decideAction(y.key, "opt:1");
-  out.posts = posts;
-  F.draft[y.key] = "maybe"; await decideAction(y.key, "text"); out.text = decisionActs(st, y);
+  await decideAction(x.key, "opt:0"); await decideAction(y.key, "opt:1"); await decideAction(z.key, "opt:0");
+  out.posts = posts.slice();
+  S.state = {{items: []}};  // the next poll: all three are closed on the server
+  out.kept = keys(S.state); out.x = decisionActs(st, withAnswered(S.state).items[0]);
+  await undoAction(y.key); out.undo = posts.at(-1); out.y = decisionActs(st, y); out.keptAfterUndo = keys(S.state);
+  now += 10001; out.late = decisionActs(st, x); out.gone = keys(S.state);
+  reply = {{code: 409, ok: false, reason: "d4 is already done"}}; S.state = {{items: [w]}};
+  await decideAction(w.key, "opt:0"); out.failed = decisionActs(st, w);
+  reply = {{ok: true}}; F.draft[w.key] = "maybe"; await decideAction(w.key, "text"); out.text = posts.at(-1);
   process.stdout.write(JSON.stringify(out));
 }})();"""
     got = json.loads(subprocess.run(["node", "-e", timer_ctx], input=js, capture_output=True, text=True, check=True).stdout)
-    assert "Confirm &lt;i&gt;CSV" in got["x"] and "Confirm no" in got["y"], "both decisions stay armed at once"
-    assert got["posts"] == [{"decision": "d1", "answer": "<i>CSV</i>"}, {"decision": "d2", "answer": "no"}], got["posts"]
-    preview, box = "answers <span class=\"mono\">decision d1: &lt;i&gt;CSV", "data-decide-input"
-    assert preview in got["x"] and got["x"].index(preview) < got["x"].index(box), "an option's preview sits on the option row"
-    assert got["text"].index("decision d2: maybe") > got["text"].index(box), "a typed answer's preview sits by Send"
+    decide = "/api/fleet/decide"
+    assert got["posts"] == [[decide, {"decision": "d1", "answer": "<i>CSV</i>"}], [decide, {"decision": "d2", "answer": "no"}],
+                            [decide, {"decision": "d3", "answer": "a"}]], "one click, one POST, on each of three decisions"
+    assert got["kept"] == ["decision:d1", "decision:d2", "decision:d3"], got["kept"]
+    assert "✓ d1: &lt;i&gt;CSV&lt;/i&gt; — 기록됨" in got["x"] and "data-undo=" in got["x"] and 'data-decide="opt:' not in got["x"], got["x"]
+    assert got["undo"] == ["/api/fleet/reopen", {"decision": "d2"}], got["undo"]
+    assert 'data-decide="opt:' in got["y"] and "기록됨" not in got["y"], "undone: the buttons come back"
+    assert got["keptAfterUndo"] == got["kept"], "the undone row stays until the server lists it open again"
+    assert "data-undo=" not in got["late"], "after UNDO_MS there is no undo"
+    assert got["gone"] == [], "nor a row the server no longer lists"
+    assert "✗ 기록 실패: d4 is already done" in got["failed"] and 'data-decide="opt:' in got["failed"], got["failed"]
+    assert got["text"] == [decide, {"decision": "d4", "answer": "maybe"}], "a typed answer sends on one click too"
 
     # Automations and shared resources render escaped; an overdue or failed automation is flagged and counted.
     js = f"""{helpers}

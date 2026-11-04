@@ -1429,6 +1429,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             code, out = fleet.decision_answer(body["decision"], body["answer"])
             FLEET_WAKE.set()
             return self.send(code, json.dumps(out).encode())
+        elif path == "/api/fleet/reopen" and isinstance(body.get("decision"), str):
+            code, out = fleet.decision_reopen(body["decision"])
+            FLEET_WAKE.set()
+            return self.send(code, json.dumps(out).encode())
         elif path == "/api/fleet/prompt" and all(isinstance(body.get(k), str) for k in ("session", "prompt", "action")):
             code, out = fleet.answer_prompt(body["session"], body["prompt"], body["action"])
             FLEET_WAKE.set()

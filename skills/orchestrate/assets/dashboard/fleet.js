@@ -276,7 +276,7 @@ const lapsedNote = (key) => F.armLapsed.has(key) ? `<span class="toned tone-warn
 const armedOf = (key) => (F.arm[key] || {}).action || "";
 
 // True on the second click of the same button within CONFIRM_MS; the first click only arms it. Each item keeps its own
-// arm and timer (F.arm[key]), so arming one open decision never disarms another. A window that lapses leaves a note on
+// arm and timer (F.arm[key]), so arming one prompt never disarms another. A window that lapses leaves a note on
 // its row (F.armLapsed), so an unconfirmed click does not read as "nothing happened".
 function confirmed(key, action) {
   const a = F.arm[key];
@@ -299,40 +299,65 @@ async function promptAction(key, action) {
   renderView();
 }
 
-// A decision registered with `orch decide`: each option, or a typed answer, answers it on a second click. The server
-// records the answer and closes the decision first, then types "decision <id>: <answer>" into the orchestrator's or lead's terminal
-// now if it is idle, or on a later collect once it is: a busy orchestrator or lead never makes the answer fail.
+// A decision registered with `orch decide`: one click on an option, or Send with a typed answer, answers it. The result
+// takes the buttons' place, with Undo for UNDO_MS. The server records the answer and closes the decision, and types
+// "decision <id>: <answer>" into the orchestrator's or lead's terminal on a collect after the undo window (DECISION_UNDO_S).
+const UNDO_MS = 10e3;
+
 function decisionActs(st, it) {
-  const r = F.decide[it.key], armed = armedOf(it.key), off = r && r.busy ? "disabled" : "";
-  const opts = it.options || [];
-  const chip = (action, label, extra = "") => `<button class="chip ${armed === action ? "armed tone-warn" : ""}" data-decide="${action}" data-key="${esc(it.key)}" ${extra} ${off}>${label}</button>`;
-  const buttons = opts.map((o, i) => chip(`opt:${i}`, `${it.recommend === i + 1 ? icon("check") : ""}${armed === `opt:${i}` ? "Confirm " : ""}${esc(o.label)}`,
+  const r = F.decide[it.key] || {}, opts = it.options || [];
+  if (r.ok && Date.now() < r.until || r.undoErr) {
+    const undo = Date.now() < r.until && !r.undoErr ? `<button class="chip" data-undo="${esc(it.key)}" ${r.undoBusy ? "disabled" : ""}>되돌리기</button>` : "";
+    return `<div class="decision"><div class="decided tone-good"><span>✓ ${esc(it.decision)}: ${esc(r.answer)} — 기록됨</span>${undo}</div>
+      ${r.undoErr ? `<div class="decided tone-bad"><span>✗ 되돌리기 실패: ${esc(r.undoErr)}</span></div>` : ""}</div>`;
+  }
+  const off = r.busy ? "disabled" : "";
+  const chip = (action, label, extra = "") => `<button class="chip" data-decide="${action}" data-key="${esc(it.key)}" ${extra} ${off}>${label}</button>`;
+  const buttons = opts.map((o, i) => chip(`opt:${i}`, `${it.recommend === i + 1 ? icon("check") : ""}${esc(o.label)}`,
     `title="${esc(o.description || o.label)}${it.recommend === i + 1 ? " (recommended)" : ""}"`)).join("");
-  const line = armed ? `decision ${it.decision}: ${armed === "text" ? (F.draft[it.key] || "").trim() : (opts[+armed.slice(4)] || {}).label}` : "";
-  // The preview sits by the button that confirms it: an option's on the option row, so it never reads as Send's.
-  const preview = line && !(r && r.busy) ? `<span class="muted ellipsis">answers <span class="mono">${esc(line)}</span></span>` : "";
-  const optPreview = armed === "text" ? "" : preview, sendPreview = armed === "text" ? preview : "";
-  const msg = !r || r.busy ? "" : !r.ok ? `Not recorded: ${r.reason}.`
-    : r.delivered ? "Recorded and sent to the orchestrator or lead." : "Recorded; will relay to the orchestrator or lead when it is idle.";
+  const failed = r.ok === false ? `<div class="decided tone-bad"><span>✗ 기록 실패: ${esc(r.reason)}</span>
+    <button class="chip" data-copy="${esc(r.line)}">${icon("copy")}Copy</button></div>` : "";
   const hint = `<div class="sub muted">Or answer in the orchestrator's or lead's terminal: <span class="mono">${esc(it.decision)}: ${esc((opts[it.recommend - 1] || {}).label || "<answer>")}</span></div>`;
-  return `<div class="decision">${buttons ? `<div class="prompt-acts">${buttons}${optPreview}</div>` : ""}${hint}
+  return `<div class="decision">${failed}${buttons ? `<div class="prompt-acts">${buttons}</div>` : ""}${hint}
     <div class="prompt-acts"><input id="decide-${esc(it.decision)}" data-decide-input="${esc(it.key)}" class="search" maxlength="1900" autocomplete="off"
-        placeholder="Or type an answer" value="${esc(F.draft[it.key] || "")}" ${off}>${chip("text", `${icon("send")}${armed === "text" ? "Confirm send" : "Send"}`)}
-      ${r && r.busy ? '<span class="muted">Recording…</span>' : line ? sendPreview
-        : lapsedNote(it.key) || (msg ? `<span class="toned tone-${r.ok ? "good" : "bad"}">${esc(msg)}</span>${r.ok ? "" : `<button class="chip" data-copy="${esc(r.line)}">${icon("copy")}Copy</button>`}` : "")}</div></div>`;
+        placeholder="Or type an answer" value="${esc(F.draft[it.key] || "")}" ${off}>${chip("text", `${icon("send")}Send`)}
+      ${r.busy ? '<span class="muted">Recording…</span>' : ""}</div></div>`;
+}
+
+// The server drops an answered decision from Needs you on its next collect. Its row stays for UNDO_MS where it was, so
+// the result and Undo outlive that redraw; an undone one stays, with its buttons, until the server lists it open again.
+function withAnswered(st) {
+  const have = new Set((st.items || []).map((i) => i.key));
+  const kept = Object.entries(F.decide).filter(([k, r]) => r.item && !have.has(k) && Date.now() < r.until).map(([, r]) => r);
+  if (!kept.length) return st;
+  const items = (st.items || []).slice();
+  kept.sort((a, b) => a.idx - b.idx).forEach((r) => items.splice(Math.min(r.idx, items.length), 0, r.item));
+  return { ...st, items };
 }
 
 async function decideAction(key, action) {
-  const st = S.state || {}, it = (st.items || []).find((i) => i.key === key);
-  if (!it) return;
+  const items = withAnswered(S.state || {}).items || [], idx = items.findIndex((i) => i.key === key), it = items[idx];
+  if (!it || (F.decide[key] || {}).busy) return;
   const answer = action === "text" ? (F.draft[key] || "").trim() : ((it.options || [])[+action.slice(4)] || {}).label;
-  if (!answer || !confirmed(key, action)) return;
-  const line = `decision ${it.decision}: ${answer}`;
-  F.decide[key] = { busy: true, line }; renderView();
+  if (!answer) return;
+  F.decide[key] = { busy: true }; renderView();
   let out;
   try { out = await fleetPost("/api/fleet/decide", { decision: it.decision, answer }); } catch (err) { out = { ok: false, reason: String(err.message || err) }; }
-  F.decide[key] = { line, ...out };
-  if (out.ok && action === "text") F.draft[key] = "";
+  F.decide[key] = { ...out, answer, line: `decision ${it.decision}: ${answer}`, ...(out.ok ? { item: it, idx, until: Date.now() + UNDO_MS } : {}) };
+  if (out.ok) {
+    if (action === "text") F.draft[key] = "";
+    setTimeout(renderView, UNDO_MS + 100);  // Undo goes, and so does a row the server no longer lists
+  }
+  renderView();
+}
+
+async function undoAction(key) {
+  const r = F.decide[key];
+  if (!r || !r.ok || r.undoBusy) return;
+  r.undoBusy = true; renderView();
+  let out;
+  try { out = await fleetPost("/api/fleet/reopen", { decision: r.item.decision }); } catch (err) { out = { ok: false, reason: String(err.message || err) }; }
+  F.decide[key] = out.ok ? { item: r.item, idx: r.idx, until: Date.now() + UNDO_MS } : { ...r, undoBusy: false, undoErr: out.reason };
   renderView();
 }
 
@@ -1668,6 +1693,8 @@ document.addEventListener("click", async (e) => {
   if (answer) { promptAction(answer.dataset.key, answer.dataset.prompt); return; }
   const decide = e.target.closest("[data-decide]");
   if (decide) { decideAction(decide.dataset.key, decide.dataset.decide); return; }
+  const undo = e.target.closest("[data-undo]");
+  if (undo) { undoAction(undo.dataset.undo); return; }
   const more = e.target.closest("[data-tl-more]");
   if (more) { const k = more.dataset.tlMore; F.tlShow[k] = (F.tlShow[k] || TL_STEP) + TL_STEP; renderView(); return; }
   const desc = e.target.closest("[data-tl-open]");
