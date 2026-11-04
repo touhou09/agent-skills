@@ -635,11 +635,22 @@ fetch = async (url, o) => {{ if (o && o.body) posts.push([url, JSON.parse(o.body
   const v = {{...w, key: "decision:d5", decision: "d5"}};
   S.state = {{generated_at: "g1", items: [v]}}; reply = {{ok: true}}; await decideAction(v.key, "opt:0"); now += 10001;
   out.stale = decisionActs(S.state, v); out.newer = decisionActs({{generated_at: "g2", items: [v]}}, v);
+  // The poll skips a redraw when only generated_at changed, unless a row is held on the old snapshot.
+  out.heldRedraws = fleetBody(S.state) !== fleetBody({{generated_at: "g2", items: [v]}});
+  out.quietAfter = fleetBody({{generated_at: "g2", items: [v]}}) === fleetBody({{generated_at: "g3", items: [v]}});
   // An undo whose answer comes after UNDO_MS: the row waits for it, and a refusal stays on screen.
   S.state = {{generated_at: "g3", items: [v]}}; await decideAction(v.key, "opt:0"); S.state = {{generated_at: "g4", items: []}};
   let answer; fetch = (url, o) => new Promise((res) => {{ answer = () => res({{status: 409, ok: false, json: async () => ({{ok: false, reason: "d5 already reached the orchestrator or lead"}})}}); }});
-  const pending = undoAction(v.key); now += 10001; out.waiting = keys(S.state);
+  const pending = undoAction(v.key); now += 10001; out.waiting = keys(S.state); out.waitingRow = decisionActs(S.state, v);
   answer(); await pending; out.refused = keys(S.state); out.refusedRow = decisionActs(S.state, v);
+  // Answering again right after an undo, before a poll lists the decision open: the kept row stays through the
+  // request, and a refusal shows on it with the buttons.
+  const u = {{...w, key: "decision:d6", decision: "d6"}};
+  S.state = {{generated_at: "g5", items: [u]}};
+  fetch = async (url, o) => ({{status: 200, ok: true, json: async () => ({{ok: true, token: "t"}})}});
+  await decideAction(u.key, "opt:0"); S.state = {{generated_at: "g6", items: []}}; await undoAction(u.key);
+  fetch = async (url, o) => ({{status: 409, ok: false, json: async () => ({{ok: false, reason: "d6 is dropped"}})}});
+  await decideAction(u.key, "opt:1"); out.again = keys(S.state); out.againRow = decisionActs(S.state, u);
   process.stdout.write(JSON.stringify(out));
 }})();"""
     got = json.loads(subprocess.run(["node", "-e", timer_ctx], input=js, capture_output=True, text=True, check=True).stdout)
@@ -659,6 +670,9 @@ fetch = async (url, o) => {{ if (o && o.body) posts.push([url, JSON.parse(o.body
     assert 'data-decide="opt:' in got["newer"] and "기록됨" not in got["newer"], got["newer"]
     assert got["waiting"] == ["decision:d5"] and got["refused"] == ["decision:d5"], (got["waiting"], got["refused"])
     assert "✗ 되돌리기 실패: d5 already reached" in got["refusedRow"], got["refusedRow"]
+    assert got["heldRedraws"] and got["quietAfter"], (got["heldRedraws"], got["quietAfter"])
+    assert 'data-decide="opt:' not in got["waitingRow"], "no buttons while an undo is in flight"
+    assert "decision:d6" in got["again"] and"✗ 기록 실패: d6 is dropped" in got["againRow"], (got["again"], got["againRow"])
 
     # Automations and shared resources render escaped; an overdue or failed automation is flagged and counted.
     js = f"""{helpers}

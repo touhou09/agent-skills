@@ -89,7 +89,10 @@ function fleetSection(section, arg) {
 const BY_ID = new WeakMap();  // one map per state, not one per rendered row
 const byId = (st) => BY_ID.get(st) || BY_ID.set(st, Object.fromEntries((st.sessions || []).map((s) => [s.id, s]))).get(st);
 // A tick that changed only timestamps needs the freshness bar redrawn, not the whole view (hover and scroll survive).
-const fleetBody = (st) => JSON.stringify({ ...st, generated_at: 0, sources: 0 });
+// A decision answered on this snapshot shows as answered only while the snapshot is current (decisionActs), so a
+// newer one, even with the same body, redraws once.
+const fleetBody = (st) => JSON.stringify({ ...st, generated_at: 0, sources: 0,
+  held: Object.keys(F.decide).filter((k) => F.decide[k].ok && F.decide[k].gen != null && F.decide[k].gen === st.generated_at) });
 const sessionHref = (id) => `#/fleet/session/${encodeURIComponent(id)}`;
 const phaseDot = (s) => `<span class="${s.phase === "working" ? "pulse" : "dot-s"} ph-${esc(s.phase)}" title="${esc(PHASE[s.phase] || s.phase)}"></span>`;
 const phaseKeys = (only = Object.keys(PHASE), n = null) => only.map((p) => `<span>${phaseDot({ phase: p })}${n ? `${n(p)} ` : ""}${PHASE[p]}</span>`).join("");
@@ -309,7 +312,7 @@ function decisionActs(st, it) {
   // Past UNDO_MS a snapshot taken before the answer (no collect since) still lists it: it stays answered. A newer
   // snapshot that lists it means the server has it open again (an undo whose reply was lost, another tab).
   const live = Date.now() < r.until, stale = r.gen != null && st.generated_at === r.gen;
-  if (r.ok && (live || stale)) {
+  if (r.ok && (live || stale || r.undoBusy)) {
     const undo = live && !r.undoErr ?`<button class="chip" data-undo="${esc(it.key)}" ${r.undoBusy ? "disabled" : ""}>되돌리기</button>` : "";
     return `<div class="decision"><div class="decided tone-good"><span>✓ ${esc(it.decision)}: ${esc(r.answer)} — 기록됨</span>${undo}</div>
       ${r.undoErr ? `<div class="decided tone-bad"><span>✗ 되돌리기 실패: ${esc(r.undoErr)}</span></div>` : ""}</div>`;
@@ -331,7 +334,7 @@ function decisionActs(st, it) {
 // the result and Undo outlive that redraw; an undone one stays, with its buttons, until the server lists it open again.
 function withAnswered(st) {
   const have = new Set((st.items || []).map((i) => i.key));
-  const kept = Object.entries(F.decide).filter(([k, r]) => r.item && !have.has(k) && (Date.now() < r.until || r.undoBusy)).map(([, r]) => r);
+  const kept = Object.entries(F.decide).filter(([k, r]) => r.item && !have.has(k) && (Date.now() < r.until || r.undoBusy || r.busy)).map(([, r]) => r);
   if (!kept.length) return st;
   const items = (st.items || []).slice();
   kept.sort((a, b) => a.idx - b.idx).forEach((r) => items.splice(Math.min(r.idx, items.length), 0, r.item));
@@ -340,14 +343,17 @@ function withAnswered(st) {
 
 async function decideAction(key, action) {
   const items = withAnswered(S.state || {}).items || [], idx = items.findIndex((i) => i.key === key), it = items[idx];
-  if (!it || (F.decide[key] || {}).busy) return;
+  const prev = F.decide[key] || {};
+  if (!it || prev.busy || prev.undoBusy) return;
   const answer = action === "text" ? (F.draft[key] || "").trim() : ((it.options || [])[+action.slice(4)] || {}).label;
   if (!answer) return;
-  F.decide[key] = { busy: true }; renderView();
+  // A row kept after an undo (no poll lists it open yet) stays kept through this request and a refusal.
+  const row = prev.item ? { item: prev.item, idx: prev.idx } : {};
+  F.decide[key] = { busy: true, ...row, until: prev.until }; renderView();
   let out;
   try { out = await fleetPost("/api/fleet/decide", { decision: it.decision, answer }); } catch (err) { out = { ok: false, reason: String(err.message || err) }; }
-  F.decide[key] = { ...out, answer, line: `decision ${it.decision}: ${answer}`,
-    ...(out.ok ? { item: it, idx, until: Date.now() + UNDO_MS, gen: (S.state || {}).generated_at } : {}) };
+  F.decide[key] = { ...out, answer, line: `decision ${it.decision}: ${answer}`, ...(out.ok ? { item: it, idx } : row),
+    until: Date.now() + UNDO_MS, ...(out.ok ? { gen: (S.state || {}).generated_at } : {}) };
   if (out.ok) {
     if (action === "text") F.draft[key] = "";
     setTimeout(renderView, UNDO_MS + 100);  // Undo goes, and so does a row the server no longer lists
