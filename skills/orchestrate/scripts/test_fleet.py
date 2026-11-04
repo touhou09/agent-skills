@@ -591,7 +591,15 @@ confirmed(pr.key, "approve"); fire(); out.prompt = promptActs(pr);
 // Open takes one click, so it never reaches confirmed(): its result must still replace the note.
 var S = {{state: {{items: [{{...pr, session: "wt-coord", prompt: {{}}}}]}}}}, pollState = () => {{}};
 fetch = async () => ({{status: 200, ok: true, json: async () => ({{ok: true, token: "t"}})}});
-promptAction(pr.key, "open").then(() => {{ out.opened = promptActs(pr); process.stdout.write(JSON.stringify(out)); }});"""
+promptAction(pr.key, "open").then(async () => {{
+  out.opened = promptActs(pr);
+  // The confirming click's result is a block where it cannot be missed, whatever came back.
+  const answer = async (reply) => {{ fetch = async () => ({{status: 200, ok: true, json: async () => ({{token: "t", ...reply}})}});
+    confirmed(pr.key, "approve"); await promptAction(pr.key, "approve"); return promptActs(pr); }};
+  out.sent = await answer({{ok: true}});
+  out.unconfirmed = await answer({{ok: false, typed: true, key: "1", reason: "dialog still shown"}});
+  out.failed = await answer({{ok: false, reason: "orca terminal show failed"}});
+  process.stdout.write(JSON.stringify(out)); }});"""
     timer_ctx = ("const vm = require('vm'), timers = [], handlers = {}, sb = {process, timers, handlers, renderView() {}, fetch: null,"
            " document: {addEventListener(t, f) { handlers[t] = f; }},"
            " setTimeout: (f, ms) => timers.push({f, ms}), clearTimeout: (id) => { if (id) timers[id - 1].f = null; }};"
@@ -600,13 +608,17 @@ promptAction(pr.key, "open").then(() => {{ out.opened = promptActs(pr); process.
     assert got["first"] is False and got["second"] is True, got
     assert got["ms"] >= 30000, got["ms"]
     assert "Confirm " in got["armed"] and "Not confirmed within" not in got["armed"], got["armed"]
+    assert "한 번 더 누르면 보낸다" in got["armed"], "an armed button says what the next click does"
     assert "Not confirmed within" not in got["afterSend"], "a sent answer clears its timer: no lapse notice later"
     assert "Not confirmed within" in got["lapsed"] and "Confirm " not in got["lapsed"], got["lapsed"]
     assert "Not confirmed within" not in got["other"], "the notice stays on its own row"
     assert "Not confirmed within" not in got["rearmed"] and "Confirm " in got["rearmed"], "a new first click clears the notice"
     assert "Not confirmed within" in got["prompt"], "a lapse after a re-arm says so again"
     assert "Confirm " not in got["decision"], "a decision is never armed"
-    assert "Opened in Orca." in got["opened"] and "Not confirmed within" not in got["opened"], got["opened"]
+    assert 'class="decided tone-good"' in got["opened"] and "Not confirmed within" not in got["opened"], got["opened"]
+    assert 'class="decided tone-good"' in got["sent"] and "✓ Approve 보냄" in got["sent"], got["sent"]
+    assert 'class="decided tone-warn"' in got["unconfirmed"] and "1 을 눌렀지만" in got["unconfirmed"], got["unconfirmed"]
+    assert 'class="decided tone-bad"' in got["failed"] and "✗ 보내지 못함: orca terminal show failed" in got["failed"], got["failed"]
 
     # A decision's option records on one click, each decision on its own. The result takes the buttons' place and stays
     # through the redraws after the server drops the closed decision (withAnswered keeps the row); Undo, for UNDO_MS,
@@ -717,6 +729,21 @@ fetch = async (url, o) => {{ if (o && o.body) posts.push([url, JSON.parse(o.body
     assert got["undoneRedraws"] and"decision:d10" not in got["lateAfterDismiss"], (got["undoneRedraws"], got["lateAfterDismiss"])
     assert "decision:d8" in got["earlyUndo"] and"decision:d8" not in got["dismissed"], (got["earlyUndo"], got["dismissed"])
     assert "decision:d6" in got["again"] and "✗ 기록 실패: d6 is dropped" in got["againRow"], (got["again"], got["againRow"])
+
+    # A redraw between mousedown and mouseup replaces the pressed button and the browser fires no click, so a quick
+    # click across rows was lost now and then. While a pointer is down the redraw waits (once), up to PRESS_MS.
+    js = f"""{take("PRESS")}
+{take("pressHolds")}
+let now = 1e9; Date.now = () => now;
+const out = {{}};
+out.idle = pressHolds();
+PRESS.down = true; PRESS.at = now;
+out.held = pressHolds(); out.again = pressHolds(); out.timers = timers.length;
+now += PRESS_MS + 1; out.stuck = pressHolds();
+PRESS.down = false; now += 10; out.released = pressHolds();
+process.stdout.write(JSON.stringify(out));"""
+    got = json.loads(subprocess.run(["node", "-e", timer_ctx], input=js, capture_output=True, text=True, check=True).stdout)
+    assert got == {"idle": False, "held": True, "again": True, "timers": 1, "stuck": False, "released": False}, got
 
     # Automations and shared resources render escaped; an overdue or failed automation is flagged and counted.
     js = f"""{helpers}

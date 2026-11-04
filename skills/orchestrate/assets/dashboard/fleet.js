@@ -267,10 +267,14 @@ function promptActs(it) {
   const r = F.prompt[it.key], armed = armedOf(it.key);
   const btn = (a, label, ic) => a === "open" || (it.answers || []).includes(a)
     ? `<button class="chip ${armed === a ? "armed tone-warn" : ""}" data-prompt="${a}" data-key="${esc(it.key)}" ${r && r.busy ? "disabled" : ""}>${icon(ic)}${armed === a ? `Confirm ${label.toLowerCase()}` : label}</button>` : "";
-  const msg = !r || r.busy ? "" : r.ok ? (r.action === "open" ? "Opened in Orca." : "Sent; the dialog closed.")
-    : r.typed ? `Pressed ${r.key}, but not confirmed (${r.reason}). Check the terminal.` : `Not sent: ${r.reason}.`;
-  return `<div class="prompt-acts">${btn("approve", "Approve", "check")}${btn("deny", "Deny", "x")}${btn("open", "Open terminal", "arrow")}
-    ${r && r.busy ? '<span class="muted">Checking the screen…</span>' : lapsedNote(it.key) || (msg ? `<span class="toned tone-${r.ok ? "good" : r.typed ? "warn" : "bad"}">${esc(msg)}</span>` : "")}</div>`;
+  // The confirming click's result takes a block of its own, as a decision's does, so it cannot read as "nothing happened".
+  const label = r && (r.action === "deny" ? "Deny" : "Approve");
+  const msg = !r || r.busy ? "" : r.ok ? (r.action === "open" ? "✓ Orca 에서 터미널을 열었다" : `✓ ${label} 보냄: 확인 창이 닫혔다`)
+    : r.typed ? `⚠ ${r.key} 을 눌렀지만 확인하지 못했다 (${r.reason}). 터미널을 확인하라.` : `✗ 보내지 못함: ${r.reason}`;
+  const note = r && r.busy ? '<span class="muted">Checking the screen…</span>' : lapsedNote(it.key)
+    || (armed ? '<span class="toned tone-warn">30초 안에 한 번 더 누르면 보낸다</span>' : "");
+  return `<div class="prompt-acts">${btn("approve", "Approve", "check")}${btn("deny", "Deny", "x")}${btn("open", "Open terminal", "arrow")}${note}</div>
+    ${msg && !armed && !lapsedNote(it.key) ? `<div class="decided tone-${r.ok ? "good" : r.typed ? "warn" : "bad"}"><span>${esc(msg)}</span></div>` : ""}`;
 }
 
 // Long enough for a remote browser (redraw and click lag) to show "Confirm …" and take the second click.
