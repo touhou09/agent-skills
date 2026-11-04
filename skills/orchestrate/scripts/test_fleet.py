@@ -488,7 +488,13 @@ assert fleet.relay_decisions(ok) == [] and ok.calls == [], "inside the undo wind
 world.worktrees[0]["agents"][0]["state"] = "working"
 f.tick(force=True)
 # Undo inside the window: the decision is open again with no answer, back in Needs you; a second undo is refused.
-assert fleet.decision_reopen(lost["id"]) == (200, {"ok": True})
+code, out = fleet.decision_reopen(lost["id"])
+assert code == 200 and out["ok"] and out["at"] >= saved["closed_at"], out  # the page releases its kept row on a later snapshot
+# A retry skips a coordinator whose own terminal works; another agent working in the same session does not hold it.
+two = {"phase": "working", "terminals": [{"handle": "h1", "pane": "p1"}, {"handle": "h2", "pane": "p2"}],
+       "agents": [{"pane": "p1", "state": "done"}, {"pane": "p2", "state": "working"}]}
+assert not fleet.target_working(two, "h1") and fleet.target_working(two, "h2")
+assert fleet.target_working({"phase": "working", "terminals": [], "agents": []}, "h9"), "no agent to read: the session's phase"
 saved = json.loads((state_dir / "decisions.json").read_text())["decisions"][lost["id"]]
 assert saved["status"] == "open" and "answer" not in saved and "delivered" not in saved and "closed_at" not in saved, saved
 assert [i["decision"] for i in items(f.tick(force=True), "decision")] == [lost["id"]]
@@ -709,6 +715,13 @@ fetch = async (url, o) => {{ if (o && o.body) posts.push([url, JSON.parse(o.body
   S.state = {{generated_at: "2026-01-01T00:00:06Z", items: [m]}};
   fetch = async (url, o) => {{ if (o && o.body) now += 5000; return {{status: 200, ok: true, json: async () => ({{ok: true, token: "t"}})}}; }};
   const sentAt = now; await decideAction(m.key, "opt:0"); out.untilAfterSend = F.decide[m.key].until - sentAt;
+  // The release counts from the server's reopen time: a late snapshot collected before the undo (newer than the
+  // screen's last one) still lists it open from before the answer, and does not release the row.
+  fetch = async () => ({{status: 200, ok: true, json: async () => ({{ok: true, token: "t", at: "2026-01-01T00:00:10Z"}})}});
+  await undoAction(m.key); releaseKept({{generated_at: "2026-01-01T00:00:08Z", items: [m]}});
+  out.beforeUndoSnapshot = keys({{generated_at: "2026-01-01T00:00:09Z", items: []}});
+  releaseKept({{generated_at: "2026-01-01T00:00:11Z", items: [m]}});
+  out.afterUndoSnapshot = keys({{generated_at: "2026-01-01T00:00:12Z", items: []}});
   process.stdout.write(JSON.stringify(out));
 }})();"""
     got = json.loads(subprocess.run(["node", "-e", timer_ctx], input=js, capture_output=True, text=True, check=True).stdout)
@@ -734,6 +747,7 @@ fetch = async (url, o) => {{ if (o && o.body) posts.push([url, JSON.parse(o.body
     assert "decision:d7" in got["lateCollect"] and got["redrawAt"] >= 60000, (got["lateCollect"], got["redrawAt"])
     assert "decision:d7" not in got["closedElsewhere"], got["closedElsewhere"]
     assert "decision:d11" in got["outOfOrder"], got["outOfOrder"]
+    assert "decision:d12" in got["beforeUndoSnapshot"] and "decision:d12" not in got["afterUndoSnapshot"], (got["beforeUndoSnapshot"], got["afterUndoSnapshot"])
     assert "decision:d11" not in got["releasedQuietly"] and got["untilAfterSend"] == 10000, (got["releasedQuietly"], got["untilAfterSend"])
     assert got["undoneRedraws"] and "decision:d10" not in got["lateAfterDismiss"], (got["undoneRedraws"], got["lateAfterDismiss"])
     assert "decision:d8" in got["earlyUndo"] and "decision:d8" not in got["dismissed"], (got["earlyUndo"], got["dismissed"])

@@ -336,9 +336,9 @@ function decisionActs(st, it) {
 
 // The server drops an answered decision from Needs you on its next collect. Its row stays for UNDO_MS where it was, so
 // the result and Undo outlive that redraw; an undone one stays, with its buttons, until the server lists it open again.
-// An undone or refused row that a snapshot newer than the undo lists again is the server's from now on: closed later,
-// it leaves the page. An older one (from before the answer, or a poll answered out of order) does not count. pollState
-// calls this on every snapshot, redrawn or not.
+// An undone or refused row that a snapshot generated after the undo (the server's reopen time, r.gen) lists again is
+// the server's from now on: closed later, it leaves the page. An older one (collected before the answer, or a poll
+// answered out of order) does not count. pollState calls this on every snapshot, redrawn or not.
 function releaseKept(st) {
   const have = new Set((st.items || []).map((i) => i.key));
   Object.entries(F.decide).forEach(([k, r]) => { if (have.has(k) && !r.ok && !r.busy && (r.gen == null || st.generated_at > r.gen)) delete r.item; });
@@ -389,7 +389,7 @@ async function undoAction(key) {
   if (F.decide[key] !== r) return;  // dismissed meanwhile
   // A refusal stays on screen for another UNDO_MS, even when it came back after the window. An undone row waits for a
   // collect to list it open again. ponytail: a fixed REOPEN_MS, not "until listed", so a decision dropped meanwhile does not stay forever.
-  F.decide[key] = out.ok ? { item: r.item, idx: r.idx, until: Date.now() + REOPEN_MS, gen: (S.state || {}).generated_at }
+  F.decide[key] = out.ok ? { item: r.item, idx: r.idx, until: Date.now() + REOPEN_MS, gen: out.at || (S.state || {}).generated_at }
     : { ...r, undoBusy: false, undoErr: out.reason, until: Date.now() + UNDO_MS };
   setTimeout(renderView, F.decide[key].until - Date.now() + 100);
   renderView();

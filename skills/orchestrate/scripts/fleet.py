@@ -2407,7 +2407,7 @@ def relay_decision(did, sender=None, skip_working=False):
     session, handle = decision_target(d, state)
     if not session:
         return {"ok": False, "reason": "no orchestrator or lead session in the fleet state", "typed": False}
-    if skip_working and session.get("phase") == "working":
+    if skip_working and target_working(session, handle):
         return {"ok": False, "reason": "the orchestrator or lead is working", "typed": False}
     _, out = send(session["id"], f"decision {did}: {d.get('answer')}", handle, sender)
     if out.get("typed"):
@@ -2447,7 +2447,15 @@ def decision_reopen(did):
             change_decisions(reopen)
     except ValueError as e:
         return 409, {"ok": False, "reason": str(e)}
-    return 200, {"ok": True}
+    return 200, {"ok": True, "at": iso(utcnow())}  # a snapshot generated after this lists it open again
+
+
+def target_working(session, handle):
+    """Whether the agent in the answer's terminal is working. Not the session's phase: another agent working in the
+    same session would hold an answer its idle terminal can take. With no agent matched, the session's phase."""
+    pane = next((t.get("pane") for t in session.get("terminals") or [] if t.get("handle") == handle), None)
+    agent = next((a for a in session.get("agents") or [] if pane and a.get("pane") == pane), None)
+    return (agent or session).get("state" if agent else "phase") == "working"
 
 
 def relay_decisions(sender=None):
