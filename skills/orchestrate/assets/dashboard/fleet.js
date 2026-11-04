@@ -317,7 +317,7 @@ function decisionActs(st, it) {
   // snapshot that lists it means the server has it open again (an undo whose reply was lost, another tab).
   const live = Date.now() < r.until, stale = r.gen != null && st.generated_at === r.gen;
   if (r.ok && (live || stale || r.undoBusy)) {
-    const undo = live && !r.undoErr ?`<button class="chip" data-undo="${esc(it.key)}" ${r.undoBusy ? "disabled" : ""}>되돌리기</button>` : "";
+    const undo = live && (!r.undoErr || r.undoRetry) ? `<button class="chip" data-undo="${esc(it.key)}" ${r.undoBusy ? "disabled" : ""}>되돌리기</button>` : "";
     return `<div class="decision"><div class="decided tone-good"><span>✓ ${esc(it.decision)}: ${esc(r.answer)} — 기록됨</span>${undo}</div>
       ${r.undoErr ? `<div class="decided tone-bad"><span>✗ 되돌리기 실패: ${esc(r.undoErr)}</span></div>` : ""}</div>`;
   }
@@ -373,10 +373,8 @@ async function decideAction(key, action) {
   if (F.decide[key] !== mine) return;  // dismissed meanwhile
   F.decide[key] = { ...out, answer, line: `decision ${it.decision}: ${answer}`, ...(out.ok ? { item: it, idx } : row),
     until: (out.ok ? sentAt : Date.now()) + UNDO_MS, ...(out.ok ? { gen: (S.state || {}).generated_at } : {}) };
-  if (out.ok) {
-    if (action === "text") F.draft[key] = "";
-    setTimeout(renderView, F.decide[key].until - Date.now() + 100);  // Undo goes, and so does a row the server no longer lists
-  }
+  if (out.ok && action === "text") F.draft[key] = "";
+  setTimeout(renderView, F.decide[key].until - Date.now() + 100);  // Undo goes, and so does a row the server no longer lists
   renderView();
 }
 
@@ -385,12 +383,13 @@ async function undoAction(key) {
   if (!r || !r.ok || r.undoBusy) return;
   r.undoBusy = true; renderView();
   let out;
-  try { out = await fleetPost("/api/fleet/reopen", { decision: r.item.decision }); } catch (err) { out = { ok: false, reason: String(err.message || err) }; }
+  // No reply at all (the network) may not have reached the server: Undo stays for the rest of its window.
+  try { out = await fleetPost("/api/fleet/reopen", { decision: r.item.decision }); } catch (err) { out = { ok: false, reason: String(err.message || err), retry: true }; }
   if (F.decide[key] !== r) return;  // dismissed meanwhile
   // A refusal stays on screen for another UNDO_MS, even when it came back after the window. An undone row waits for a
   // collect to list it open again. ponytail: a fixed REOPEN_MS, not "until listed", so a decision dropped meanwhile does not stay forever.
   F.decide[key] = out.ok ? { item: r.item, idx: r.idx, until: Date.now() + REOPEN_MS, gen: out.at || (S.state || {}).generated_at }
-    : { ...r, undoBusy: false, undoErr: out.reason, until: Date.now() + UNDO_MS };
+    : { ...r, undoBusy: false, undoErr: out.reason, undoRetry: !!out.retry, until: out.retry ? r.until : Date.now() + UNDO_MS };
   setTimeout(renderView, F.decide[key].until - Date.now() + 100);
   renderView();
 }

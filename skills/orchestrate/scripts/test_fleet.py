@@ -670,6 +670,14 @@ fetch = async (url, o) => {{ if (o && o.body) posts.push([url, JSON.parse(o.body
   await decideAction(u.key, "opt:0"); S.state = {{generated_at: "g6", items: []}}; await undoAction(u.key);
   fetch = async (url, o) => ({{status: 409, ok: false, json: async () => ({{ok: false, reason: "d6 is dropped"}})}});
   await decideAction(u.key, "opt:1"); out.again = keys(S.state); out.againRow = decisionActs(S.state, u);
+  out.refusedRedraw = timers.at(-1).ms;  // the refused row's own expiry redraws
+  // An undo lost to the network (no reply) can be tried again inside the window; a server refusal cannot.
+  const g = {{...w, key: "decision:d13", decision: "d13"}};
+  S.state = {{generated_at: "g20", items: [g]}};
+  fetch = async () => ({{status: 200, ok: true, json: async () => ({{ok: true, token: "t"}})}});
+  await decideAction(g.key, "opt:0");
+  fetch = async (url, o) => {{ if (o && o.body) throw new Error("Failed to fetch"); return {{status: 200, ok: true, json: async () => ({{token: "t"}})}}; }};
+  await undoAction(g.key); out.transient = decisionActs(S.state, g);
   // An undone row waits for a late collect past UNDO_MS; a kept row counts in its type, so an Inbox filter on
   // decisions does not fall back to All when the last open one is answered.
   const t = {{...w, key: "decision:d7", decision: "d7"}};
@@ -743,6 +751,9 @@ fetch = async (url, o) => {{ if (o && o.body) posts.push([url, JSON.parse(o.body
     assert "✗ 되돌리기 실패: d5 already reached" in got["refusedRow"], got["refusedRow"]
     assert got["heldRedraws"] and got["quietAfter"], (got["heldRedraws"], got["quietAfter"])
     assert 'data-decide="opt:' not in got["waitingRow"], "no buttons while an undo is in flight"
+    assert got["refusedRedraw"] >= 10000, got["refusedRedraw"]
+    assert "data-undo=" in got["transient"] and "✗ 되돌리기 실패: Failed to fetch" in got["transient"], got["transient"]
+    assert "data-undo=" not in got["refusedRow"], "a refusal from the server leaves no Undo"
     assert got["counted"].get("decision", 0) >= 1, got["counted"]  # the other rows this run keeps count too
     assert "decision:d7" in got["lateCollect"] and got["redrawAt"] >= 60000, (got["lateCollect"], got["redrawAt"])
     assert "decision:d7" not in got["closedElsewhere"], got["closedElsewhere"]
