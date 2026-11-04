@@ -1430,7 +1430,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             FLEET_WAKE.set()
             return self.send(code, json.dumps(out).encode())
         elif path == "/api/fleet/reopen" and isinstance(body.get("decision"), str):
-            code, out = fleet.decision_reopen(body["decision"])
+            code, out = fleet.decision_reopen(body["decision"], body.get("at") if isinstance(body.get("at"), str) else None)
             FLEET_WAKE.set()
             return self.send(code, json.dumps(out).encode())
         elif path == "/api/fleet/prompt" and all(isinstance(body.get(k), str) for k in ("session", "prompt", "action")):

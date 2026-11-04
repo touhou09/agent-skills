@@ -2424,19 +2424,25 @@ def decision_answer(did, answer):
     if not answer or len(answer) > DECISION_ANSWER_MAX:
         return 400, {"ok": False, "reason": f"an answer of 1 to {DECISION_ANSWER_MAX} characters"}
     try:
-        decision_close(did, "done", answer, relay=True)
+        d = decision_close(did, "done", answer, relay=True)
     except ValueError as e:
         return 409, {"ok": False, "reason": str(e)}
-    return 200, {"ok": True, "recorded": True, "delivered": False, "line": f"decision {did}: {mask(answer, DECISION_ANSWER_MAX)}"}
+    # at: when it was recorded. The page's undo sends it back, and the page holds "recorded" until a snapshot after it.
+    return 200, {"ok": True, "recorded": True, "delivered": False, "at": d["closed_at"],
+                 "line": f"decision {did}: {mask(answer, DECISION_ANSWER_MAX)}"}
 
 
-def decision_reopen(did):
+def decision_reopen(did, answered_at=None):
     """The page's undo: an answer given on the page that has not been typed into the coordinator's terminal is taken
-    back, and the decision is open again. Under RELAY_LOCK, so it never races a relay of the same answer."""
+    back, and the decision is open again. Under RELAY_LOCK, so it never races a relay of the same answer. answered_at
+    (decision_answer's `at`) names the answer: a retried undo never takes back a later answer from another tab.
+    ponytail: second resolution; two answers to one decision inside one second would match."""
     def reopen(store):
         d = store.get("decisions", {}).get(did)
         if not d:
             raise ValueError(f"no decision {did}")
+        if answered_at and d.get("closed_at") != answered_at:
+            raise ValueError(f"{did} was answered again since")
         if d.get("status") != "done" or d.get("delivered") is not False:
             raise ValueError(f"{did} already reached the orchestrator or lead" if d.get("delivered") else f"{did} is {d.get('status')}")
         for k in ("answer", "closed_at", "delivered"):

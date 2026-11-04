@@ -488,7 +488,9 @@ assert fleet.relay_decisions(ok) == [] and ok.calls == [], "inside the undo wind
 world.worktrees[0]["agents"][0]["state"] = "working"
 f.tick(force=True)
 # Undo inside the window: the decision is open again with no answer, back in Needs you; a second undo is refused.
-code, out = fleet.decision_reopen(lost["id"])
+assert out["at"] == saved["closed_at"], out  # the answer's own time: an undo names the answer it takes back
+assert fleet.decision_reopen(lost["id"], "2000-01-01T00:00:00Z")[0] == 409, "an undo of another answer (a second tab) is refused"
+code, out = fleet.decision_reopen(lost["id"], saved["closed_at"])
 assert code == 200 and out["ok"] and out["at"] >= saved["closed_at"], out  # the page releases its kept row on a later snapshot
 # A retry skips a coordinator whose own terminal works; another agent working in the same session does not hold it.
 two = {"phase": "working", "terminals": [{"handle": "h1", "pane": "p1"}, {"handle": "h2", "pane": "p2"}],
@@ -696,10 +698,6 @@ fetch = async (url, o) => {{ if (o && o.body) posts.push([url, JSON.parse(o.body
   // Dismissing a kept row forgets it, so the next redraw does not put it back.
   const btn = {{dataset: {{dismiss: q.key}}, disabled: false, closest: (sel) => sel.includes("[data-dismiss]") ? btn : sel === "li" ? {{remove() {{}}}} : null}};
   await handlers.click({{target: btn}}); out.dismissed = keys(S.state);
-  // An undo before the first poll redraws on the next snapshot even when its body is the same, so the row is released.
-  const p = {{...w, key: "decision:d9", decision: "d9"}};
-  S.state = {{generated_at: "g13", items: [p]}}; await decideAction(p.key, "opt:0"); await undoAction(p.key);
-  out.undoneRedraws = fleetBody(S.state) !== fleetBody({{generated_at: "g14", items: [p]}});
   // A reply that lands after Dismiss does not bring the row back.
   const o = {{...w, key: "decision:d10", decision: "d10"}};
   S.state = {{generated_at: "g15", items: [o]}}; await decideAction(o.key, "opt:0"); S.state = {{generated_at: "g16", items: []}};
@@ -730,6 +728,16 @@ fetch = async (url, o) => {{ if (o && o.body) posts.push([url, JSON.parse(o.body
   out.beforeUndoSnapshot = keys({{generated_at: "2026-01-01T00:00:09Z", items: []}});
   releaseKept({{generated_at: "2026-01-01T00:00:11Z", items: [m]}});
   out.afterUndoSnapshot = keys({{generated_at: "2026-01-01T00:00:12Z", items: []}});
+  // The answer's server time decides: a snapshot collected before the answer (newer than the screen's last one) keeps
+  // it recorded after the window; one collected after it that still lists it means it is open. Undo names the answer.
+  const k = {{...w, key: "decision:d14", decision: "d14"}}, sent = [];
+  S.state = {{generated_at: "2026-01-01T00:00:13Z", items: [k]}};
+  fetch = async (url, o) => {{ if (o && o.body) sent.push(JSON.parse(o.body));
+    return {{status: 200, ok: true, json: async () => ({{ok: true, token: "t", at: "2026-01-01T00:00:15Z"}})}}; }};
+  await decideAction(k.key, "opt:0"); now += 10001;
+  out.preAnswer = decisionActs({{generated_at: "2026-01-01T00:00:14Z", items: [k]}}, k);
+  out.postAnswer = decisionActs({{generated_at: "2026-01-01T00:00:16Z", items: [k]}}, k);
+  now -= 10001; await undoAction(k.key); out.undoBody = sent.at(-1);
   process.stdout.write(JSON.stringify(out));
 }})();"""
     got = json.loads(subprocess.run(["node", "-e", timer_ctx], input=js, capture_output=True, text=True, check=True).stdout)
@@ -758,9 +766,11 @@ fetch = async (url, o) => {{ if (o && o.body) posts.push([url, JSON.parse(o.body
     assert "decision:d7" in got["lateCollect"] and got["redrawAt"] >= 60000, (got["lateCollect"], got["redrawAt"])
     assert "decision:d7" not in got["closedElsewhere"], got["closedElsewhere"]
     assert "decision:d11" in got["outOfOrder"], got["outOfOrder"]
+    assert "기록됨" in got["preAnswer"] and 'data-decide="opt:' in got["postAnswer"], (got["preAnswer"], got["postAnswer"])
+    assert got["undoBody"] == {"decision": "d14", "at": "2026-01-01T00:00:15Z"}, got["undoBody"]
     assert "decision:d12" in got["beforeUndoSnapshot"] and "decision:d12" not in got["afterUndoSnapshot"], (got["beforeUndoSnapshot"], got["afterUndoSnapshot"])
     assert "decision:d11" not in got["releasedQuietly"] and got["untilAfterSend"] == 10000, (got["releasedQuietly"], got["untilAfterSend"])
-    assert got["undoneRedraws"] and "decision:d10" not in got["lateAfterDismiss"], (got["undoneRedraws"], got["lateAfterDismiss"])
+    assert "decision:d10" not in got["lateAfterDismiss"], got["lateAfterDismiss"]
     assert "decision:d8" in got["earlyUndo"] and "decision:d8" not in got["dismissed"], (got["earlyUndo"], got["dismissed"])
     assert "decision:d6" in got["again"] and "✗ 기록 실패: d6 is dropped" in got["againRow"], (got["again"], got["againRow"])
 

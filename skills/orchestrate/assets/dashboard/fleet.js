@@ -89,10 +89,10 @@ function fleetSection(section, arg) {
 const BY_ID = new WeakMap();  // one map per state, not one per rendered row
 const byId = (st) => BY_ID.get(st) || BY_ID.set(st, Object.fromEntries((st.sessions || []).map((s) => [s.id, s]))).get(st);
 // A tick that changed only timestamps needs the freshness bar redrawn, not the whole view (hover and scroll survive).
-// A decision answered or undone on this snapshot is held by it (decisionActs, withAnswered), so a newer snapshot,
-// even with the same body, redraws once.
+// A decision shows as answered while the snapshot is no newer than its answer (decisionActs), so the first snapshot
+// after it redraws once, even with the same body.
 const fleetBody = (st) => JSON.stringify({ ...st, generated_at: 0, sources: 0,
-  held: Object.keys(F.decide).filter((k) => F.decide[k].gen != null && F.decide[k].gen === st.generated_at) });
+  held: Object.keys(F.decide).filter((k) => F.decide[k].ok && F.decide[k].gen != null && st.generated_at <= F.decide[k].gen) });
 const sessionHref = (id) => `#/fleet/session/${encodeURIComponent(id)}`;
 const phaseDot = (s) => `<span class="${s.phase === "working" ? "pulse" : "dot-s"} ph-${esc(s.phase)}" title="${esc(PHASE[s.phase] || s.phase)}"></span>`;
 const phaseKeys = (only = Object.keys(PHASE), n = null) => only.map((p) => `<span>${phaseDot({ phase: p })}${n ? `${n(p)} ` : ""}${PHASE[p]}</span>`).join("");
@@ -313,9 +313,9 @@ const UNDO_MS = 10e3, REOPEN_MS = 60e3;
 
 function decisionActs(st, it) {
   const r = F.decide[it.key] || {}, opts = it.options || [];
-  // Past UNDO_MS a snapshot taken before the answer (no collect since) still lists it: it stays answered. A newer
-  // snapshot that lists it means the server has it open again (an undo whose reply was lost, another tab).
-  const live = Date.now() < r.until, stale = r.gen != null && st.generated_at === r.gen;
+  // Past UNDO_MS a snapshot collected before the answer (r.gen, the server's record time) still lists it: it stays
+  // answered. One collected after it that lists it means the server has it open again (a lost undo reply, another tab).
+  const live = Date.now() < r.until, stale = r.gen != null && st.generated_at <= r.gen;
   if (r.ok && (live || stale || r.undoBusy)) {
     const undo = live && (!r.undoErr || r.undoRetry) ? `<button class="chip" data-undo="${esc(it.key)}" ${r.undoBusy ? "disabled" : ""}>되돌리기</button>` : "";
     return `<div class="decision"><div class="decided tone-good"><span>✓ ${esc(it.decision)}: ${esc(r.answer)} — 기록됨</span>${undo}</div>
@@ -372,7 +372,7 @@ async function decideAction(key, action) {
   try { out = await fleetPost("/api/fleet/decide", { decision: it.decision, answer }); } catch (err) { out = { ok: false, reason: String(err.message || err) }; }
   if (F.decide[key] !== mine) return;  // dismissed meanwhile
   F.decide[key] = { ...out, answer, line: `decision ${it.decision}: ${answer}`, ...(out.ok ? { item: it, idx } : row),
-    until: (out.ok ? sentAt : Date.now()) + UNDO_MS, ...(out.ok ? { gen: (S.state || {}).generated_at } : {}) };
+    until: (out.ok ? sentAt : Date.now()) + UNDO_MS, ...(out.ok ? { gen: out.at || (S.state || {}).generated_at } : {}) };
   if (out.ok && action === "text") F.draft[key] = "";
   setTimeout(renderView, F.decide[key].until - Date.now() + 100);  // Undo goes, and so does a row the server no longer lists
   renderView();
@@ -384,7 +384,7 @@ async function undoAction(key) {
   r.undoBusy = true; renderView();
   let out;
   // No reply at all (the network) may not have reached the server: Undo stays for the rest of its window.
-  try { out = await fleetPost("/api/fleet/reopen", { decision: r.item.decision }); } catch (err) { out = { ok: false, reason: String(err.message || err), retry: true }; }
+  try { out = await fleetPost("/api/fleet/reopen", { decision: r.item.decision, at: r.at }); } catch (err) { out = { ok: false, reason: String(err.message || err), retry: true }; }
   if (F.decide[key] !== r) return;  // dismissed meanwhile
   // A refusal stays on screen for another UNDO_MS, even when it came back after the window. An undone row waits for a
   // collect to list it open again. ponytail: a fixed REOPEN_MS, not "until listed", so a decision dropped meanwhile does not stay forever.
