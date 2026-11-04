@@ -670,6 +670,19 @@ fetch = async (url, o) => {{ if (o && o.body) posts.push([url, JSON.parse(o.body
   // Dismissing a kept row forgets it, so the next redraw does not put it back.
   const btn = {{dataset: {{dismiss: q.key}}, disabled: false, closest: (sel) => sel.includes("[data-dismiss]") ? btn : sel === "li" ? {{remove() {{}}}} : null}};
   await handlers.click({{target: btn}}); out.dismissed = keys(S.state);
+  // An undo before the first poll redraws on the next snapshot even when its body is the same, so the row is released.
+  const p = {{...w, key: "decision:d9", decision: "d9"}};
+  S.state = {{generated_at: "g13", items: [p]}}; await decideAction(p.key, "opt:0"); await undoAction(p.key);
+  out.undoneRedraws = fleetBody(S.state) !== fleetBody({{generated_at: "g14", items: [p]}});
+  // A reply that lands after Dismiss does not bring the row back.
+  const o = {{...w, key: "decision:d10", decision: "d10"}};
+  S.state = {{generated_at: "g15", items: [o]}}; await decideAction(o.key, "opt:0"); S.state = {{generated_at: "g16", items: []}};
+  let late; fetch = (url, opt) => opt && opt.body && url.endsWith("/reopen")
+    ? new Promise((res) => {{ late = () => res({{status: 200, ok: true, json: async () => ({{ok: true}})}}); }})
+    : Promise.resolve({{status: 200, ok: true, json: async () => ({{ok: true, token: "t"}})}});
+  const undoing = undoAction(o.key);
+  const ob = {{...btn, dataset: {{dismiss: o.key}}, closest: (sel) => sel.includes("[data-dismiss]") ? ob : sel === "li" ? {{remove() {{}}}} : null}};
+  await handlers.click({{target: ob}}); late(); await undoing; out.lateAfterDismiss = keys(S.state);
   process.stdout.write(JSON.stringify(out));
 }})();"""
     got = json.loads(subprocess.run(["node", "-e", timer_ctx], input=js, capture_output=True, text=True, check=True).stdout)
@@ -694,7 +707,8 @@ fetch = async (url, o) => {{ if (o && o.body) posts.push([url, JSON.parse(o.body
     assert got["counted"].get("decision", 0) >= 1, got["counted"]  # the other rows this run keeps count too
     assert "decision:d7" in got["lateCollect"] and got["redrawAt"] >= 60000, (got["lateCollect"], got["redrawAt"])
     assert "decision:d7" not in got["closedElsewhere"], got["closedElsewhere"]
-    assert "decision:d8" in got["earlyUndo"] and "decision:d8" not in got["dismissed"], (got["earlyUndo"], got["dismissed"])
+    assert got["undoneRedraws"] and "decision:d10" not in got["lateAfterDismiss"], (got["undoneRedraws"], got["lateAfterDismiss"])
+    assert "decision:d8" in got["earlyUndo"] and"decision:d8" not in got["dismissed"], (got["earlyUndo"], got["dismissed"])
     assert "decision:d6" in got["again"] and "✗ 기록 실패: d6 is dropped" in got["againRow"], (got["again"], got["againRow"])
 
     # Automations and shared resources render escaped; an overdue or failed automation is flagged and counted.

@@ -89,10 +89,10 @@ function fleetSection(section, arg) {
 const BY_ID = new WeakMap();  // one map per state, not one per rendered row
 const byId = (st) => BY_ID.get(st) || BY_ID.set(st, Object.fromEntries((st.sessions || []).map((s) => [s.id, s]))).get(st);
 // A tick that changed only timestamps needs the freshness bar redrawn, not the whole view (hover and scroll survive).
-// A decision answered on this snapshot shows as answered only while the snapshot is current (decisionActs), so a
-// newer one, even with the same body, redraws once.
+// A decision answered or undone on this snapshot is held by it (decisionActs, withAnswered), so a newer snapshot,
+// even with the same body, redraws once.
 const fleetBody = (st) => JSON.stringify({ ...st, generated_at: 0, sources: 0,
-  held: Object.keys(F.decide).filter((k) => F.decide[k].ok && F.decide[k].gen != null && F.decide[k].gen === st.generated_at) });
+  held: Object.keys(F.decide).filter((k) => F.decide[k].gen != null && F.decide[k].gen === st.generated_at) });
 const sessionHref = (id) => `#/fleet/session/${encodeURIComponent(id)}`;
 const phaseDot = (s) => `<span class="${s.phase === "working" ? "pulse" : "dot-s"} ph-${esc(s.phase)}" title="${esc(PHASE[s.phase] || s.phase)}"></span>`;
 const phaseKeys = (only = Object.keys(PHASE), n = null) => only.map((p) => `<span>${phaseDot({ phase: p })}${n ? `${n(p)} ` : ""}${PHASE[p]}</span>`).join("");
@@ -355,9 +355,10 @@ async function decideAction(key, action) {
   if (!answer) return;
   // A row kept after an undo (no poll lists it open yet) stays kept through this request and a refusal.
   const row = prev.item ? { item: prev.item, idx: prev.idx } : {};
-  F.decide[key] = { busy: true, ...row, until: prev.until }; renderView();
+  const mine = F.decide[key] = { busy: true, ...row, until: prev.until }; renderView();
   let out;
   try { out = await fleetPost("/api/fleet/decide", { decision: it.decision, answer }); } catch (err) { out = { ok: false, reason: String(err.message || err) }; }
+  if (F.decide[key] !== mine) return;  // dismissed meanwhile
   F.decide[key] = { ...out, answer, line: `decision ${it.decision}: ${answer}`, ...(out.ok ? { item: it, idx } : row),
     until: Date.now() + UNDO_MS, ...(out.ok ? { gen: (S.state || {}).generated_at } : {}) };
   if (out.ok) {
@@ -373,9 +374,11 @@ async function undoAction(key) {
   r.undoBusy = true; renderView();
   let out;
   try { out = await fleetPost("/api/fleet/reopen", { decision: r.item.decision }); } catch (err) { out = { ok: false, reason: String(err.message || err) }; }
+  if (F.decide[key] !== r) return;  // dismissed meanwhile
   // A refusal stays on screen for another UNDO_MS, even when it came back after the window. An undone row waits for a
   // collect to list it open again. ponytail: a fixed REOPEN_MS, not "until listed", so a decision dropped meanwhile does not stay forever.
-  F.decide[key] = out.ok ? { item: r.item, idx: r.idx, until: Date.now() + REOPEN_MS, gen: (S.state || {}).generated_at } :{ ...r, undoBusy: false, undoErr: out.reason, until: Date.now() + UNDO_MS };
+  F.decide[key] = out.ok ? { item: r.item, idx: r.idx, until: Date.now() + REOPEN_MS, gen: (S.state || {}).generated_at }
+    : { ...r, undoBusy: false, undoErr: out.reason, until: Date.now() + UNDO_MS };
   setTimeout(renderView, F.decide[key].until - Date.now() + 100);
   renderView();
 }
