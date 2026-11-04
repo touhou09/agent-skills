@@ -335,8 +335,8 @@ function decisionActs(st, it) {
 function withAnswered(st) {
   const have = new Set((st.items || []).map((i) => i.key));
   // An undone or refused row that a snapshot newer than the undo lists again is the server's from now on: closed
-  // later, it leaves the page. The snapshot from before the answer still lists it too, and does not count.
-  Object.entries(F.decide).forEach(([k, r]) => { if (have.has(k) && !r.ok && !r.busy && st.generated_at !== r.gen) delete r.item; });
+  // later, it leaves the page. An older one (from before the answer, or a poll answered out of order) does not count.
+  Object.entries(F.decide).forEach(([k, r]) => { if (have.has(k) && !r.ok && !r.busy && (r.gen == null || st.generated_at > r.gen)) delete r.item; });
   const kept =Object.entries(F.decide).filter(([k, r]) => r.item && !have.has(k) && (Date.now() < r.until || r.undoBusy || r.busy)).map(([, r]) => r);
   if (!kept.length) return st;
   const items = (st.items || []).slice(), counts = { ...st.counts };

@@ -683,6 +683,12 @@ fetch = async (url, o) => {{ if (o && o.body) posts.push([url, JSON.parse(o.body
   const undoing = undoAction(o.key);
   const ob = {{...btn, dataset: {{dismiss: o.key}}, closest: (sel) => sel.includes("[data-dismiss]") ? ob : sel === "li" ? {{remove() {{}}}} : null}};
   await handlers.click({{target: ob}}); late(); await undoing; out.lateAfterDismiss = keys(S.state);
+  // Polls can land out of order: a snapshot older than the undo that still lists the decision does not release it.
+  fetch = async () => ({{status: 200, ok: true, json: async () => ({{ok: true, token: "t"}})}});
+  const n = {{...w, key: "decision:d11", decision: "d11"}};
+  S.state = {{generated_at: "2026-01-01T00:00:02Z", items: [n]}}; await decideAction(n.key, "opt:0"); await undoAction(n.key);
+  withAnswered({{generated_at: "2026-01-01T00:00:01Z", items: [n]}});
+  S.state = {{generated_at: "2026-01-01T00:00:03Z", items: []}}; out.outOfOrder = keys(S.state);
   process.stdout.write(JSON.stringify(out));
 }})();"""
     got = json.loads(subprocess.run(["node", "-e", timer_ctx], input=js, capture_output=True, text=True, check=True).stdout)
@@ -707,7 +713,8 @@ fetch = async (url, o) => {{ if (o && o.body) posts.push([url, JSON.parse(o.body
     assert got["counted"].get("decision", 0) >= 1, got["counted"]  # the other rows this run keeps count too
     assert "decision:d7" in got["lateCollect"] and got["redrawAt"] >= 60000, (got["lateCollect"], got["redrawAt"])
     assert "decision:d7" not in got["closedElsewhere"], got["closedElsewhere"]
-    assert got["undoneRedraws"] and "decision:d10" not in got["lateAfterDismiss"], (got["undoneRedraws"], got["lateAfterDismiss"])
+    assert "decision:d11" in got["outOfOrder"], got["outOfOrder"]
+    assert got["undoneRedraws"] and"decision:d10" not in got["lateAfterDismiss"], (got["undoneRedraws"], got["lateAfterDismiss"])
     assert "decision:d8" in got["earlyUndo"] and"decision:d8" not in got["dismissed"], (got["earlyUndo"], got["dismissed"])
     assert "decision:d6" in got["again"] and "✗ 기록 실패: d6 is dropped" in got["againRow"], (got["again"], got["againRow"])
 
