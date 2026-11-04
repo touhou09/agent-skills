@@ -76,7 +76,7 @@ const EDGE = {
 };
 const CI_TONE = { success: "good", failure: "bad", pending: "warn" };
 
-const F = { token: null, draft: {}, confirm: null, chat: {}, arm: null, prompt: {}, decide: {}, tlShow: {}, tlOpen: new Set(), stageFold: new Set(), jobOpen: new Set() };
+const F = { token: null, draft: {}, confirm: null, chat: {}, arm: {}, armLapsed: new Set(), prompt: {}, decide: {}, tlShow: {}, tlOpen: new Set(), stageFold: new Set(), jobOpen: new Set() };
 
 // route() hands over "#/fleet/<section>[/<arg>]"; the only argument is a session id.
 // The Work page's stage table is the Stages page now: an old #/fleet/work link opens it.
@@ -261,7 +261,7 @@ function itemRow(st, it, { showSession = true } = {}) {
 
 // Approve and Deny take a second click (the list re-renders under the pointer every tick); Open does not.
 function promptActs(it) {
-  const r = F.prompt[it.key], armed = F.arm && F.arm.key === it.key ? F.arm.action : "";
+  const r = F.prompt[it.key], armed = armedOf(it.key);
   const btn = (a, label, ic) => a === "open" || (it.answers || []).includes(a)
     ? `<button class="chip ${armed === a ? "armed tone-warn" : ""}" data-prompt="${a}" data-key="${esc(it.key)}" ${r && r.busy ? "disabled" : ""}>${icon(ic)}${armed === a ? `Confirm ${label.toLowerCase()}` : label}</button>` : "";
   const msg = !r || r.busy ? "" : r.ok ? (r.action === "open" ? "Opened in Orca." : "Sent; the dialog closed.")
@@ -272,16 +272,18 @@ function promptActs(it) {
 
 // Long enough for a remote browser (redraw and click lag) to show "Confirm …" and take the second click.
 const CONFIRM_MS = 30e3;
-const lapsedNote = (key) => F.armLapsed === key ? `<span class="toned tone-warn">Not confirmed within ${CONFIRM_MS / 1e3} s; click again.</span>` : "";
+const lapsedNote = (key) => F.armLapsed.has(key) ? `<span class="toned tone-warn">Not confirmed within ${CONFIRM_MS / 1e3} s; click again.</span>` : "";
+const armedOf = (key) => (F.arm[key] || {}).action || "";
 
-// True on the second click of the same button within CONFIRM_MS; the first click only arms it. A window that lapses
-// leaves a note on its row (F.armLapsed), so an unconfirmed click does not read as "nothing happened".
+// True on the second click of the same button within CONFIRM_MS; the first click only arms it. Each item keeps its own
+// arm and timer (F.arm[key]), so arming one open decision never disarms another. A window that lapses leaves a note on
+// its row (F.armLapsed), so an unconfirmed click does not read as "nothing happened".
 function confirmed(key, action) {
-  clearTimeout(F.armTimer);
-  F.armLapsed = null;
-  if (F.arm && F.arm.key === key && F.arm.action === action) { F.arm = null; return true; }
-  F.arm = { key, action };
-  F.armTimer = setTimeout(() => { F.arm = null; F.armLapsed = key; renderView(); }, CONFIRM_MS);
+  const a = F.arm[key];
+  if (a) clearTimeout(a.timer);
+  F.armLapsed.delete(key);
+  if (a && a.action === action) { delete F.arm[key]; return true; }
+  F.arm[key] = { action, timer: setTimeout(() => { delete F.arm[key]; F.armLapsed.add(key); renderView(); }, CONFIRM_MS) };
   renderView();
   return false;
 }
@@ -289,7 +291,7 @@ function confirmed(key, action) {
 async function promptAction(key, action) {
   const it = ((S.state || {}).items || []).find((i) => i.key === key);
   if (!it || (action !== "open" && !confirmed(key, action))) return;
-  F.armLapsed = null;  // Open skips confirmed(): its result must not sit under an old lapse note
+  F.armLapsed.delete(key);  // Open skips confirmed(): its result must not sit under an old lapse note
   F.prompt[key] = { busy: true }; renderView();
   let out;
   try { out = await fleetPost("/api/fleet/prompt", { session: it.session, prompt: it.prompt, action }); } catch (err) { out = { ok: false, reason: String(err.message || err) }; }
@@ -301,19 +303,22 @@ async function promptAction(key, action) {
 // records the answer and closes the decision first, then types "decision <id>: <answer>" into the orchestrator's or lead's terminal
 // now if it is idle, or on a later collect once it is: a busy orchestrator or lead never makes the answer fail.
 function decisionActs(st, it) {
-  const r = F.decide[it.key], armed = F.arm && F.arm.key === it.key ? F.arm.action : "", off = r && r.busy ? "disabled" : "";
+  const r = F.decide[it.key], armed = armedOf(it.key), off = r && r.busy ? "disabled" : "";
   const opts = it.options || [];
   const chip = (action, label, extra = "") => `<button class="chip ${armed === action ? "armed tone-warn" : ""}" data-decide="${action}" data-key="${esc(it.key)}" ${extra} ${off}>${label}</button>`;
   const buttons = opts.map((o, i) => chip(`opt:${i}`, `${it.recommend === i + 1 ? icon("check") : ""}${armed === `opt:${i}` ? "Confirm " : ""}${esc(o.label)}`,
     `title="${esc(o.description || o.label)}${it.recommend === i + 1 ? " (recommended)" : ""}"`)).join("");
   const line = armed ? `decision ${it.decision}: ${armed === "text" ? (F.draft[it.key] || "").trim() : (opts[+armed.slice(4)] || {}).label}` : "";
+  // The preview sits by the button that confirms it: an option's on the option row, so it never reads as Send's.
+  const preview = line && !(r && r.busy) ? `<span class="muted ellipsis">answers <span class="mono">${esc(line)}</span></span>` : "";
+  const optPreview = armed === "text" ? "" : preview, sendPreview = armed === "text" ? preview : "";
   const msg = !r || r.busy ? "" : !r.ok ? `Not recorded: ${r.reason}.`
     : r.delivered ? "Recorded and sent to the orchestrator or lead." : "Recorded; will relay to the orchestrator or lead when it is idle.";
   const hint = `<div class="sub muted">Or answer in the orchestrator's or lead's terminal: <span class="mono">${esc(it.decision)}: ${esc((opts[it.recommend - 1] || {}).label || "<answer>")}</span></div>`;
-  return `<div class="decision">${buttons ? `<div class="prompt-acts">${buttons}</div>` : ""}${hint}
+  return `<div class="decision">${buttons ? `<div class="prompt-acts">${buttons}${optPreview}</div>` : ""}${hint}
     <div class="prompt-acts"><input id="decide-${esc(it.decision)}" data-decide-input="${esc(it.key)}" class="search" maxlength="1900" autocomplete="off"
         placeholder="Or type an answer" value="${esc(F.draft[it.key] || "")}" ${off}>${chip("text", `${icon("send")}${armed === "text" ? "Confirm send" : "Send"}`)}
-      ${r && r.busy ? '<span class="muted">Recording…</span>' : line ? `<span class="muted ellipsis">answers <span class="mono">${esc(line)}</span></span>`
+      ${r && r.busy ? '<span class="muted">Recording…</span>' : line ? sendPreview
         : lapsedNote(it.key) || (msg ? `<span class="toned tone-${r.ok ? "good" : "bad"}">${esc(msg)}</span>${r.ok ? "" : `<button class="chip" data-copy="${esc(r.line)}">${icon("copy")}Copy</button>`}` : "")}</div></div>`;
 }
 

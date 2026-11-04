@@ -593,6 +593,29 @@ promptAction(pr.key, "open").then(() => {{ out.opened = promptActs(pr); process.
     assert "Not confirmed within" in got["prompt"], "a permission prompt's Approve lapses the same way"
     assert "Opened in Orca." in got["opened"] and "Not confirmed within" not in got["opened"], got["opened"]
 
+    # Several open decisions each keep their own arm: arming one does not disarm another, and each second click records
+    # its own answer. The armed preview sits on the option row, not beside Send, which an empty box makes a no-op.
+    other = {**hostile, "key": "decision:d2", "decision": "d2", "options": [{"label": "yes"}, {"label": "no"}]}
+    js = f"""{helpers}
+{(assets / "fleet.js").read_text()}
+const st = {{sessions: []}}, x = {json.dumps(hostile)}, y = {json.dumps(other)}, posts = [], out = {{}};
+var S = {{state: {{items: [x, y]}}}}, pollState = () => {{}};
+fetch = async (url, o) => {{ if (o && o.body) posts.push(JSON.parse(o.body)); return {{status: 200, ok: true, json: async () => ({{ok: true, token: "t", delivered: true}})}}; }};
+(async () => {{
+  await decideAction(x.key, "opt:0"); await decideAction(y.key, "opt:1");
+  out.x = decisionActs(st, x); out.y = decisionActs(st, y);
+  await decideAction(x.key, "opt:0"); await decideAction(y.key, "opt:1");
+  out.posts = posts;
+  F.draft[y.key] = "maybe"; await decideAction(y.key, "text"); out.text = decisionActs(st, y);
+  process.stdout.write(JSON.stringify(out));
+}})();"""
+    got = json.loads(subprocess.run(["node", "-e", timer_ctx], input=js, capture_output=True, text=True, check=True).stdout)
+    assert "Confirm &lt;i&gt;CSV" in got["x"] and "Confirm no" in got["y"], "both decisions stay armed at once"
+    assert got["posts"] == [{"decision": "d1", "answer": "<i>CSV</i>"}, {"decision": "d2", "answer": "no"}], got["posts"]
+    preview, box = "answers <span class=\"mono\">decision d1: &lt;i&gt;CSV", "data-decide-input"
+    assert preview in got["x"] and got["x"].index(preview) < got["x"].index(box), "an option's preview sits on the option row"
+    assert got["text"].index("decision d2: maybe") > got["text"].index(box), "a typed answer's preview sits by Send"
+
     # Automations and shared resources render escaped; an overdue or failed automation is flagged and counted.
     js = f"""{helpers}
 {take("hhmm")}
