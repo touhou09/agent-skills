@@ -334,7 +334,9 @@ function decisionActs(st, it) {
 // the result and Undo outlive that redraw; an undone one stays, with its buttons, until the server lists it open again.
 function withAnswered(st) {
   const have = new Set((st.items || []).map((i) => i.key));
-  const kept = Object.entries(F.decide).filter(([k, r]) => r.item && !have.has(k) && (Date.now() < r.until || r.undoBusy || r.busy)).map(([, r]) => r);
+  // An undone or refused row the server lists again is the server's from now on: closed later, it leaves the page.
+  Object.entries(F.decide).forEach(([k, r]) => { if (have.has(k) && !r.ok && !r.busy) delete r.item; });
+  const kept =Object.entries(F.decide).filter(([k, r]) => r.item && !have.has(k) && (Date.now() < r.until || r.undoBusy || r.busy)).map(([, r]) => r);
   if (!kept.length) return st;
   const items = (st.items || []).slice(), counts = { ...st.counts };
   kept.sort((a, b) => a.idx - b.idx).forEach((r) => {
@@ -373,7 +375,7 @@ async function undoAction(key) {
   // A refusal stays on screen for another UNDO_MS, even when it came back after the window. An undone row waits for a
   // collect to list it open again. ponytail: a fixed REOPEN_MS, not "until listed", so a decision dropped meanwhile does not stay forever.
   F.decide[key] = out.ok ? { item: r.item, idx: r.idx, until: Date.now() + REOPEN_MS } : { ...r, undoBusy: false, undoErr: out.reason, until: Date.now() + UNDO_MS };
-  setTimeout(renderView, UNDO_MS + 100);
+  setTimeout(renderView, F.decide[key].until - Date.now() + 100);
   renderView();
 }
 

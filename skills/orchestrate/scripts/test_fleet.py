@@ -658,7 +658,10 @@ fetch = async (url, o) => {{ if (o && o.body) posts.push([url, JSON.parse(o.body
   fetch = async (url, o) => ({{status: 200, ok: true, json: async () => ({{ok: true, token: "t"}})}});
   await decideAction(t.key, "opt:0"); S.state = {{generated_at: "g8", counts: {{}}, items: []}};
   out.counted = withAnswered(S.state).counts;
-  await undoAction(t.key); now += 10001; out.lateCollect = keys(S.state);
+  await undoAction(t.key); out.redrawAt = timers.at(-1).ms; now += 10001; out.lateCollect = keys(S.state);
+  // Once a collect lists it open, the server owns the row: closed in the terminal later, it leaves the page.
+  S.state = {{generated_at: "g9", counts: {{decision: 1}}, items: [t]}}; withAnswered(S.state);
+  S.state = {{generated_at: "g10", counts: {{}}, items: []}}; out.closedElsewhere = keys(S.state);
   process.stdout.write(JSON.stringify(out));
 }})();"""
     got = json.loads(subprocess.run(["node", "-e", timer_ctx], input=js, capture_output=True, text=True, check=True).stdout)
@@ -681,7 +684,8 @@ fetch = async (url, o) => {{ if (o && o.body) posts.push([url, JSON.parse(o.body
     assert got["heldRedraws"] and got["quietAfter"], (got["heldRedraws"], got["quietAfter"])
     assert 'data-decide="opt:' not in got["waitingRow"], "no buttons while an undo is in flight"
     assert got["counted"].get("decision", 0) >= 1, got["counted"]  # the other rows this run keeps count too
-    assert "decision:d7" in got["lateCollect"], got["lateCollect"]
+    assert "decision:d7" in got["lateCollect"] and got["redrawAt"] >= 60000, (got["lateCollect"], got["redrawAt"])
+    assert "decision:d7" not in got["closedElsewhere"], got["closedElsewhere"]
     assert "decision:d6" in got["again"] and "✗ 기록 실패: d6 is dropped" in got["againRow"], (got["again"], got["againRow"])
 
     # Automations and shared resources render escaped; an overdue or failed automation is flagged and counted.
