@@ -306,8 +306,11 @@ const UNDO_MS = 10e3;
 
 function decisionActs(st, it) {
   const r = F.decide[it.key] || {}, opts = it.options || [];
-  if (r.ok && Date.now() < r.until || r.undoErr) {
-    const undo = Date.now() < r.until && !r.undoErr ? `<button class="chip" data-undo="${esc(it.key)}" ${r.undoBusy ? "disabled" : ""}>되돌리기</button>` : "";
+  // Past UNDO_MS a snapshot taken before the answer (no collect since) still lists it: it stays answered. A newer
+  // snapshot that lists it means the server has it open again (an undo whose reply was lost, another tab).
+  const live = Date.now() < r.until, stale = r.gen != null && st.generated_at === r.gen;
+  if (r.ok && (live || stale)) {
+    const undo = live && !r.undoErr ?`<button class="chip" data-undo="${esc(it.key)}" ${r.undoBusy ? "disabled" : ""}>되돌리기</button>` : "";
     return `<div class="decision"><div class="decided tone-good"><span>✓ ${esc(it.decision)}: ${esc(r.answer)} — 기록됨</span>${undo}</div>
       ${r.undoErr ? `<div class="decided tone-bad"><span>✗ 되돌리기 실패: ${esc(r.undoErr)}</span></div>` : ""}</div>`;
   }
@@ -328,7 +331,7 @@ function decisionActs(st, it) {
 // the result and Undo outlive that redraw; an undone one stays, with its buttons, until the server lists it open again.
 function withAnswered(st) {
   const have = new Set((st.items || []).map((i) => i.key));
-  const kept = Object.entries(F.decide).filter(([k, r]) => r.item && !have.has(k) && Date.now() < r.until).map(([, r]) => r);
+  const kept = Object.entries(F.decide).filter(([k, r]) => r.item && !have.has(k) && (Date.now() < r.until || r.undoBusy)).map(([, r]) => r);
   if (!kept.length) return st;
   const items = (st.items || []).slice();
   kept.sort((a, b) => a.idx - b.idx).forEach((r) => items.splice(Math.min(r.idx, items.length), 0, r.item));
@@ -343,7 +346,8 @@ async function decideAction(key, action) {
   F.decide[key] = { busy: true }; renderView();
   let out;
   try { out = await fleetPost("/api/fleet/decide", { decision: it.decision, answer }); } catch (err) { out = { ok: false, reason: String(err.message || err) }; }
-  F.decide[key] = { ...out, answer, line: `decision ${it.decision}: ${answer}`, ...(out.ok ? { item: it, idx, until: Date.now() + UNDO_MS } : {}) };
+  F.decide[key] = { ...out, answer, line: `decision ${it.decision}: ${answer}`,
+    ...(out.ok ? { item: it, idx, until: Date.now() + UNDO_MS, gen: (S.state || {}).generated_at } : {}) };
   if (out.ok) {
     if (action === "text") F.draft[key] = "";
     setTimeout(renderView, UNDO_MS + 100);  // Undo goes, and so does a row the server no longer lists
@@ -357,7 +361,9 @@ async function undoAction(key) {
   r.undoBusy = true; renderView();
   let out;
   try { out = await fleetPost("/api/fleet/reopen", { decision: r.item.decision }); } catch (err) { out = { ok: false, reason: String(err.message || err) }; }
-  F.decide[key] = out.ok ? { item: r.item, idx: r.idx, until: Date.now() + UNDO_MS } : { ...r, undoBusy: false, undoErr: out.reason };
+  // A refusal stays on screen for another UNDO_MS, even when it came back after the window.
+  F.decide[key] = out.ok ? { item: r.item, idx: r.idx, until: Date.now() + UNDO_MS } : { ...r, undoBusy: false, undoErr: out.reason, until: Date.now() + UNDO_MS };
+  setTimeout(renderView, UNDO_MS + 100);
   renderView();
 }
 

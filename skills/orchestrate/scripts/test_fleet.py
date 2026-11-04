@@ -630,6 +630,16 @@ fetch = async (url, o) => {{ if (o && o.body) posts.push([url, JSON.parse(o.body
   reply = {{code: 409, ok: false, reason: "d4 is already done"}}; S.state = {{items: [w]}};
   await decideAction(w.key, "opt:0"); out.failed = decisionActs(st, w);
   reply = {{ok: true}}; F.draft[w.key] = "maybe"; await decideAction(w.key, "text"); out.text = posts.at(-1);
+  // A collect that has not run yet: the same snapshot still lists the answered decision after UNDO_MS. It stays
+  // answered (no buttons to resubmit); a newer snapshot that still lists it says the server has it open again.
+  const v = {{...w, key: "decision:d5", decision: "d5"}};
+  S.state = {{generated_at: "g1", items: [v]}}; reply = {{ok: true}}; await decideAction(v.key, "opt:0"); now += 10001;
+  out.stale = decisionActs(S.state, v); out.newer = decisionActs({{generated_at: "g2", items: [v]}}, v);
+  // An undo whose answer comes after UNDO_MS: the row waits for it, and a refusal stays on screen.
+  S.state = {{generated_at: "g3", items: [v]}}; await decideAction(v.key, "opt:0"); S.state = {{generated_at: "g4", items: []}};
+  let answer; fetch = (url, o) => new Promise((res) => {{ answer = () => res({{status: 409, ok: false, json: async () => ({{ok: false, reason: "d5 already reached the orchestrator or lead"}})}}); }});
+  const pending = undoAction(v.key); now += 10001; out.waiting = keys(S.state);
+  answer(); await pending; out.refused = keys(S.state); out.refusedRow = decisionActs(S.state, v);
   process.stdout.write(JSON.stringify(out));
 }})();"""
     got = json.loads(subprocess.run(["node", "-e", timer_ctx], input=js, capture_output=True, text=True, check=True).stdout)
@@ -645,6 +655,10 @@ fetch = async (url, o) => {{ if (o && o.body) posts.push([url, JSON.parse(o.body
     assert got["gone"] == [], "nor a row the server no longer lists"
     assert "✗ 기록 실패: d4 is already done" in got["failed"] and 'data-decide="opt:' in got["failed"], got["failed"]
     assert got["text"] == [decide, {"decision": "d4", "answer": "maybe"}], "a typed answer sends on one click too"
+    assert "기록됨" in got["stale"] and "data-undo=" not in got["stale"] and 'data-decide="opt:' not in got["stale"], got["stale"]
+    assert 'data-decide="opt:' in got["newer"] and "기록됨" not in got["newer"], got["newer"]
+    assert got["waiting"] == ["decision:d5"] and got["refused"] == ["decision:d5"], (got["waiting"], got["refused"])
+    assert "✗ 되돌리기 실패: d5 already reached" in got["refusedRow"], got["refusedRow"]
 
     # Automations and shared resources render escaped; an overdue or failed automation is flagged and counted.
     js = f"""{helpers}
