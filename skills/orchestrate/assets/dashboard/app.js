@@ -1038,6 +1038,7 @@ async function pollState() {
     if (!r.ok) throw new Error(String(r.status));
     S.etag = r.headers.get("ETag");
     const next = await r.json();
+    if (isFleet()) releaseKept(next);
     const quiet = isFleet() && S.state && fleetBody(S.state) === fleetBody(next);
     S.state = next;
     if (isFleet()) S.fleet = next;

@@ -701,6 +701,14 @@ fetch = async (url, o) => {{ if (o && o.body) posts.push([url, JSON.parse(o.body
   S.state = {{generated_at: "2026-01-01T00:00:02Z", items: [n]}}; await decideAction(n.key, "opt:0"); await undoAction(n.key);
   withAnswered({{generated_at: "2026-01-01T00:00:01Z", items: [n]}});
   S.state = {{generated_at: "2026-01-01T00:00:03Z", items: []}}; out.outOfOrder = keys(S.state);
+  // A newer snapshot that lists the undone decision releases it even when the poll skips the redraw.
+  releaseKept({{generated_at: "2026-01-01T00:00:04Z", items: [n]}});
+  S.state = {{generated_at: "2026-01-01T00:00:05Z", items: []}}; out.releasedQuietly = keys(S.state);
+  // The undo window starts when the answer was sent: a reply 5 s late leaves 5 s of it, inside the server's 12 s.
+  const m = {{...w, key: "decision:d12", decision: "d12"}};
+  S.state = {{generated_at: "2026-01-01T00:00:06Z", items: [m]}};
+  fetch = async (url, o) => {{ if (o && o.body) now += 5000; return {{status: 200, ok: true, json: async () => ({{ok: true, token: "t"}})}}; }};
+  const sentAt = now; await decideAction(m.key, "opt:0"); out.untilAfterSend = F.decide[m.key].until - sentAt;
   process.stdout.write(JSON.stringify(out));
 }})();"""
     got = json.loads(subprocess.run(["node", "-e", timer_ctx], input=js, capture_output=True, text=True, check=True).stdout)
@@ -726,8 +734,9 @@ fetch = async (url, o) => {{ if (o && o.body) posts.push([url, JSON.parse(o.body
     assert "decision:d7" in got["lateCollect"] and got["redrawAt"] >= 60000, (got["lateCollect"], got["redrawAt"])
     assert "decision:d7" not in got["closedElsewhere"], got["closedElsewhere"]
     assert "decision:d11" in got["outOfOrder"], got["outOfOrder"]
-    assert got["undoneRedraws"] and"decision:d10" not in got["lateAfterDismiss"], (got["undoneRedraws"], got["lateAfterDismiss"])
-    assert "decision:d8" in got["earlyUndo"] and"decision:d8" not in got["dismissed"], (got["earlyUndo"], got["dismissed"])
+    assert "decision:d11" not in got["releasedQuietly"] and got["untilAfterSend"] == 10000, (got["releasedQuietly"], got["untilAfterSend"])
+    assert got["undoneRedraws"] and "decision:d10" not in got["lateAfterDismiss"], (got["undoneRedraws"], got["lateAfterDismiss"])
+    assert "decision:d8" in got["earlyUndo"] and "decision:d8" not in got["dismissed"], (got["earlyUndo"], got["dismissed"])
     assert "decision:d6" in got["again"] and "✗ 기록 실패: d6 is dropped" in got["againRow"], (got["again"], got["againRow"])
 
     # A redraw between mousedown and mouseup replaces the pressed button and the browser fires no click, so a quick

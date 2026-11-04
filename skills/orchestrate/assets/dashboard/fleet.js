@@ -336,12 +336,18 @@ function decisionActs(st, it) {
 
 // The server drops an answered decision from Needs you on its next collect. Its row stays for UNDO_MS where it was, so
 // the result and Undo outlive that redraw; an undone one stays, with its buttons, until the server lists it open again.
-function withAnswered(st) {
+// An undone or refused row that a snapshot newer than the undo lists again is the server's from now on: closed later,
+// it leaves the page. An older one (from before the answer, or a poll answered out of order) does not count. pollState
+// calls this on every snapshot, redrawn or not.
+function releaseKept(st) {
   const have = new Set((st.items || []).map((i) => i.key));
-  // An undone or refused row that a snapshot newer than the undo lists again is the server's from now on: closed
-  // later, it leaves the page. An older one (from before the answer, or a poll answered out of order) does not count.
   Object.entries(F.decide).forEach(([k, r]) => { if (have.has(k) && !r.ok && !r.busy && (r.gen == null || st.generated_at > r.gen)) delete r.item; });
-  const kept =Object.entries(F.decide).filter(([k, r]) => r.item && !have.has(k) && (Date.now() < r.until || r.undoBusy || r.busy)).map(([, r]) => r);
+}
+
+function withAnswered(st) {
+  releaseKept(st);
+  const have = new Set((st.items || []).map((i) => i.key));
+  const kept = Object.entries(F.decide).filter(([k, r]) => r.item && !have.has(k) && (Date.now() < r.until || r.undoBusy || r.busy)).map(([, r]) => r);
   if (!kept.length) return st;
   const items = (st.items || []).slice(), counts = { ...st.counts };
   kept.sort((a, b) => a.idx - b.idx).forEach((r) => {
@@ -360,14 +366,16 @@ async function decideAction(key, action) {
   // A row kept after an undo (no poll lists it open yet) stays kept through this request and a refusal.
   const row = prev.item ? { item: prev.item, idx: prev.idx } : {};
   const mine = F.decide[key] = { busy: true, ...row, until: prev.until }; renderView();
+  // The undo window counts from the send: the server records after it, so Undo ends before its relay (DECISION_UNDO_S).
+  const sentAt = Date.now();
   let out;
   try { out = await fleetPost("/api/fleet/decide", { decision: it.decision, answer }); } catch (err) { out = { ok: false, reason: String(err.message || err) }; }
   if (F.decide[key] !== mine) return;  // dismissed meanwhile
   F.decide[key] = { ...out, answer, line: `decision ${it.decision}: ${answer}`, ...(out.ok ? { item: it, idx } : row),
-    until: Date.now() + UNDO_MS, ...(out.ok ? { gen: (S.state || {}).generated_at } : {}) };
+    until: (out.ok ? sentAt : Date.now()) + UNDO_MS, ...(out.ok ? { gen: (S.state || {}).generated_at } : {}) };
   if (out.ok) {
     if (action === "text") F.draft[key] = "";
-    setTimeout(renderView, UNDO_MS + 100);  // Undo goes, and so does a row the server no longer lists
+    setTimeout(renderView, F.decide[key].until - Date.now() + 100);  // Undo goes, and so does a row the server no longer lists
   }
   renderView();
 }
