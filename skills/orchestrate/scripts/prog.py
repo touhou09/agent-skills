@@ -2414,7 +2414,8 @@ def cmd_wait(argv):
         res = orca_json("orchestration", "check", *box, "--wait", "--types", ",".join(sorted(ACTIONABLE)),
                         "--timeout-ms", timeout)
         did, msgs = batch(res)
-        if not did:
+        # Orca's concise --json has no deliveryId, and the typed wait already took its batch: keep those messages.
+        if not did and not msgs:
             # A typed wait never wakes for heartbeats, so they pile up in the FIFO; pull that batch.
             did, msgs = batch(orca_json("orchestration", "check", *box))
         work = [m for m in msgs if m.get("type") != "heartbeat" and not revoked_echo(m)]
@@ -2434,7 +2435,8 @@ def cmd_wait(argv):
             print_stuck(p, run_id)
             print_reviews(p)
             print(f"ACTIONABLE delivery={did} ({len(work)} of {len(msgs)}): process every message, then "
-                  f"orca orchestration check {' '.join(box)} --ack {did} --json")
+                  f"orca orchestration check {' '.join(box)} --ack {did} --json" if did else
+                  f"ACTIONABLE ({len(work)} of {len(msgs)}): Orca marked this batch read; process every message")
             return
         if did:
             orca_json("orchestration", "check", *box, "--ack", did)

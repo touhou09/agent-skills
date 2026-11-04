@@ -561,6 +561,37 @@ for rows, me in ((fleet_rows[1:], "term_L"), ([dict(fleet_rows[0], agentTerminal
     except SystemExit as e:
         assert "not lead dispatch" in str(e), e
     assert not any(a[:2] == ("orchestration", "check") for a in calls), calls
+# Orca's concise --json view of a consuming check has no deliveryId, and that check already took the batch: the
+# typed wait's mail is the batch, and a second check finds the inbox empty. Each actionable type wakes the wait,
+# for a lead bound to its Run (no lead_dispatch: the Run inbox) and for a dispatched lead (its own mailbox).
+def concise_orca(msg, calls):
+    taken = []
+    def fake(*a):
+        calls.append(a)
+        if a[:2] == ("orchestration", "worker-list"):
+            return {"workers": fleet_rows}
+        if a[:2] != ("orchestration", "check"):
+            return {}
+        if taken or "--ack" in a:
+            return {"messages": []}
+        taken.append(1)
+        return {"messages": [msg]}
+    return fake
+for cfg, me, box in (({"run": "run_top", "repo": "o/r"}, "term_coord", ("--run", "run_top")),
+                     ({"run": "run_top", "repo": "o/r", "lead_dispatch": "ctx_L"}, "term_L", ("--terminal", "term_L"))):
+    prog.Program = lambda slug, cfg=cfg: type("P", (), {"cfg": cfg, "slug": slug, "events": lambda self: [], "dir": _pdir})()
+    prog.os.environ["ORCA_TERMINAL_HANDLE"] = me
+    for kind in ("worker_done", "question", "escalation"):
+        calls = []
+        prog.orca_json = concise_orca({"id": "msg_1", "type": kind, "payload": {"dispatchId": "u1"}}, calls)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            prog.cmd_wait(["s", "--rounds", "1"])
+        got = out.getvalue()
+        assert f"INBOX id=msg_1 type={kind}" in got and "ACTIONABLE" in got and "nothing actionable" not in got, (cfg, kind, got)
+        assert "--ack None" not in got, got
+        checks = [a for a in calls if a[:2] == ("orchestration", "check")]
+        assert checks and all(a[2:4] == box for a in checks), (box, checks)
 if saved_me is None:
     del prog.os.environ["ORCA_TERMINAL_HANDLE"]
 else:
