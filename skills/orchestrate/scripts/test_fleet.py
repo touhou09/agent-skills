@@ -592,7 +592,8 @@ confirmed(pr.key, "approve"); fire(); out.prompt = promptActs(pr);
 var S = {{state: {{items: [{{...pr, session: "wt-coord", prompt: {{}}}}]}}}}, pollState = () => {{}};
 fetch = async () => ({{status: 200, ok: true, json: async () => ({{ok: true, token: "t"}})}});
 promptAction(pr.key, "open").then(() => {{ out.opened = promptActs(pr); process.stdout.write(JSON.stringify(out)); }});"""
-    timer_ctx = ("const vm = require('vm'), timers = [], sb = {process, timers, renderView() {}, fetch: null, document: {addEventListener() {}},"
+    timer_ctx = ("const vm = require('vm'), timers = [], handlers = {}, sb = {process, timers, handlers, renderView() {}, fetch: null,"
+           " document: {addEventListener(t, f) { handlers[t] = f; }},"
            " setTimeout: (f, ms) => timers.push({f, ms}), clearTimeout: (id) => { if (id) timers[id - 1].f = null; }};"
            "vm.runInNewContext(require('fs').readFileSync(0, 'utf8'), sb);")
     got = json.loads(subprocess.run(["node", "-e", timer_ctx], input=js, capture_output=True, text=True, check=True).stdout)
@@ -662,6 +663,13 @@ fetch = async (url, o) => {{ if (o && o.body) posts.push([url, JSON.parse(o.body
   // Once a collect lists it open, the server owns the row: closed in the terminal later, it leaves the page.
   S.state = {{generated_at: "g9", counts: {{decision: 1}}, items: [t]}}; withAnswered(S.state);
   S.state = {{generated_at: "g10", counts: {{}}, items: []}}; out.closedElsewhere = keys(S.state);
+  // Undone before the first poll: the snapshot still listing it predates the undo, so it does not release the row.
+  const q = {{...w, key: "decision:d8", decision: "d8"}};
+  S.state = {{generated_at: "g11", items: [q]}}; await decideAction(q.key, "opt:0"); await undoAction(q.key);
+  withAnswered(S.state); S.state = {{generated_at: "g12", items: []}}; out.earlyUndo = keys(S.state);
+  // Dismissing a kept row forgets it, so the next redraw does not put it back.
+  const btn = {{dataset: {{dismiss: q.key}}, disabled: false, closest: (sel) => sel.includes("[data-dismiss]") ? btn : sel === "li" ? {{remove() {{}}}} : null}};
+  await handlers.click({{target: btn}}); out.dismissed = keys(S.state);
   process.stdout.write(JSON.stringify(out));
 }})();"""
     got = json.loads(subprocess.run(["node", "-e", timer_ctx], input=js, capture_output=True, text=True, check=True).stdout)
@@ -686,6 +694,7 @@ fetch = async (url, o) => {{ if (o && o.body) posts.push([url, JSON.parse(o.body
     assert got["counted"].get("decision", 0) >= 1, got["counted"]  # the other rows this run keeps count too
     assert "decision:d7" in got["lateCollect"] and got["redrawAt"] >= 60000, (got["lateCollect"], got["redrawAt"])
     assert "decision:d7" not in got["closedElsewhere"], got["closedElsewhere"]
+    assert "decision:d8" in got["earlyUndo"] and "decision:d8" not in got["dismissed"], (got["earlyUndo"], got["dismissed"])
     assert "decision:d6" in got["again"] and "✗ 기록 실패: d6 is dropped" in got["againRow"], (got["again"], got["againRow"])
 
     # Automations and shared resources render escaped; an overdue or failed automation is flagged and counted.
