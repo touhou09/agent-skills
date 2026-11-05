@@ -2481,16 +2481,26 @@ def gate_resolve(f, gid, option):
     """The page's click on a gate option: Orca's gate-resolve, for a gate the last read listed open and one of its own
     options. Orca takes no resolve back, so there is no undo. Marked resolved here, it leaves Needs you on the next
     collect, before the next read of its Run."""
-    g = next((g for g in (f.runs["gates"] if f else []) if g.get("id") == gid and g.get("status") not in ("resolved", "cancelled")), None)
+    runs = f.runs if f else {"runs": [], "gates": []}  # one read of the reference: a tick swaps the whole dict
+    g = next((g for g in runs["gates"] if g.get("id") == gid and g.get("status") not in ("resolved", "cancelled")), None)
+    coord = g and next((r.get("coordinator_handle") for r in runs["runs"] if r["id"] == g.get("run_id")), None)
     if not g:
         return 409, {"ok": False, "reason": f"no open gate {gid}"}
     if option not in gate_options(g.get("options")):
         return 400, {"ok": False, "reason": f"{gid} has no option {option!r}"}
+    # Orca lets only the terminal coordinating the gate's Run resolve it, and infers the caller from the terminal the
+    # command runs in. This server (under launchd) runs in none, so it names that coordinator.
+    if not coord:
+        return 409, {"ok": False, "reason": f"{gid}: its Run has no coordinator terminal to resolve it as"}
+    args = ("orchestration", "gate-resolve", "--id", gid, "--resolution", option, "--from", coord)
     try:
-        orca("orchestration", "gate-resolve", "--id", gid, "--resolution", option)
+        orca(*args)
     except SourceError as e:
-        return 502, {"ok": False, "reason": str(e)}
-    g["status"] = "resolved"
+        return 502, {"ok": False, "reason": str(e), "line": shlex.join(("orca", *args))}
+    with f.lock:  # a tick may have replaced the Run cache while Orca answered: mark the gate in the current one
+        for x in f.runs["gates"]:
+            if x.get("id") == gid:
+                x["status"] = "resolved"
     return 200, {"ok": True, "at": iso(utcnow())}
 
 

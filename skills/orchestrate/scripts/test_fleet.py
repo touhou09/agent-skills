@@ -541,8 +541,9 @@ calls, real_orca = [], fleet.orca
 
 def fake_orca(*a, **k):
     calls.append(a)
-    if a[-1] == "hold":
+    if "hold" in a:
         raise fleet.SourceError("gate_not_pending: already resolved")
+    f.runs = json.loads(json.dumps(f.runs))  # a tick replaced the Run cache while Orca resolved the gate
     return {"id": "g1", "status": "resolved"}
 
 
@@ -556,10 +557,22 @@ assert fleet.gate_resolve(f, "g1", "maybe")[0] == 400 and fleet.gate_resolve(f, 
 assert fleet.gate_resolve(None, "g1", "land")[0] == 409 and calls == [], "no fleet (ORCH_FLEET=off): no gate is open"
 code, out = fleet.gate_resolve(f, "g1", "hold")
 assert (code, out["ok"], out["reason"]) == (502, False, "gate_not_pending: already resolved"), out
+assert out["line"] == "orca orchestration gate-resolve --id g1 --resolution hold --from term_lead", out
+# Orca lets only the terminal coordinating the gate's Run resolve it, and a server under launchd has no terminal of
+# its own to infer: the server names the Run's coordinator.
 code, out = fleet.gate_resolve(f, "g1", "land")
 assert code == 200 and out["ok"] and out["at"], out
-assert calls[-1] == ("orchestration", "gate-resolve", "--id", "g1", "--resolution", "land"), calls
-assert not [i for i in items(f.tick(), "approval") if i["source"] == "orca-gate"]
+assert calls[-1] == ("orchestration", "gate-resolve", "--id", "g1", "--resolution", "land", "--from", "term_lead"), calls
+assert not [i for i in items(f.tick(), "approval") if i["source"] == "orca-gate"], "marked in the cache that replaced the old one"
+world.runs["gates"][0]["status"] = "pending"
+saved_runs = world.runs["runs"]
+world.runs["runs"] = [r for r in saved_runs if r["id"] != "run_lead"]
+f.tick(force=True)
+assert fleet.gate_resolve(f, "g1", "land")[0] == 409 and len(calls) == 2, "a Run with no coordinator: nothing to resolve as"
+world.runs["runs"] = saved_runs
+f.tick(force=True)
+fleet.orca = lambda *a, **k: {"status": "resolved"}
+assert fleet.gate_resolve(f, "g1", "land")[0] == 200
 assert fleet.gate_resolve(f, "g1", "land")[0] == 409, "a second click (another tab) is refused"
 fleet.orca = real_orca
 world.runs["gates"][0]["status"] = "pending"
@@ -847,6 +860,8 @@ fetch = async (url, o) => {{ if (o && o.body) posts.push([url, JSON.parse(o.body
     assert 'data-decide="text"' not in got["row"] and "<b>hold" not in got["row"], got["row"]
     assert got["posts"] == [["/api/fleet/gate", {"gate": "g1", "option": "<b>hold</b>"}], ["/api/fleet/gate", {"gate": "g1", "option": "land"}]], got["posts"]
     assert "✗ 실패: gate_not_pending" in got["failed"] and got["failed"].count('data-decide="opt:') == 2, got["failed"]
+    # With no line from the server (the request never reached it), the Copy is still one shell argument per value.
+    assert 'data-copy="orca orchestration gate-resolve --id &#39;g1&#39; --resolution &#39;&lt;b&gt;hold&lt;/b&gt;&#39;"' in got["failed"], got["failed"]
     assert "✓ g1: land — 기록됨" in got["done"] and 'data-decide="opt:' not in got["done"] and "data-undo=" not in got["done"], got["done"]
     assert got["kept"] == ["gate:g1"], "the resolved row stays in place while the server drops it"
 

@@ -383,11 +383,13 @@ async function decideAction(key, action) {
   // The undo window counts from the send: the server records after it, so Undo ends before its relay (DECISION_UNDO_S).
   const sentAt = Date.now();
   let out;
-  const [url, req, line] = it.gate ? ["/api/fleet/gate", { gate: it.gate, option: answer }, `orca orchestration gate-resolve --id ${it.gate} --resolution ${answer}`]
+  // A gate's Copy: the server's exact command (with the Run's coordinator) when it got that far, else the same quoted.
+  const q = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
+  const [url, req, line] = it.gate ? ["/api/fleet/gate", { gate: it.gate, option: answer }, `orca orchestration gate-resolve --id ${q(it.gate)} --resolution ${q(answer)}`]
     : ["/api/fleet/decide", { decision: it.decision, answer }, `decision ${it.decision}: ${answer}`];
   try { out = await fleetPost(url, req); } catch (err) { out = { ok: false, reason: String(err.message || err) }; }
   if (F.decide[key] !== mine) return;  // dismissed meanwhile
-  F.decide[key] = { ...out, answer, line, ...(out.ok ? { item: it, idx } : row),
+  F.decide[key] = { ...out, answer, line: out.line || line, ...(out.ok ? { item: it, idx } : row),
     until: (out.ok ? sentAt : Date.now()) + UNDO_MS, ...(out.ok ? { gen: out.at || (S.state || {}).generated_at } : {}) };
   if (out.ok && action === "text") F.draft[key] = "";
   setTimeout(renderView, F.decide[key].until - Date.now() + 100);  // Undo goes, and so does a row the server no longer lists
