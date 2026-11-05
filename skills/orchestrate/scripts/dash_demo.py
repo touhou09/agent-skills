@@ -693,8 +693,11 @@ class FakeFleetWorld:
                                (("login", "ACME-101 login flow"), ("export", "ACME-102 billing export"), ("docs", "ACME-103 docs"),
                                 ("lead", "Billing tickets"), ("invoice", "ACME-104 invoice PDF"))]
                               + [{"id": i, "run_id": "run_plugins", "display_name": t, "status": "completed"} for i, t in PLUGIN_TASKS],
-                     "gates": [{"id": "g1", "status": "pending", "question": "Land #41 before #42?", "options": ["yes", "no"], "task_id": "task_export",
-                                "created_at": _ago(now, 0.5)}]}
+                     # As `gate-list --full` gives it: options JSON-encoded, created_at in UTC with no zone. The lead's
+                     # own `Land #N` task has no worker.
+                     "gates": [{"id": "g1", "run_id": "run_lead", "task_id": "task_land44", "status": "pending",
+                                "question": "Land PR #44: ACME-104 invoice PDF?", "options": json.dumps(["land", "hold"]),
+                                "resolution": None, "created_at": _ago(now, 0.5)[:19].replace("T", " "), "resolved_at": None}]}
         if crowd:
             # A machine with dozens of sessions, for the sidebar: a second lead with its cards, then standalones in every phase.
             self.worktrees.append(wt("wt-crowd-lead", "search lead", "acme/platform", "lead/search", 0.1,

@@ -1429,6 +1429,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             code, out = fleet.decision_answer(body["decision"], body["answer"])
             FLEET_WAKE.set()
             return self.send(code, json.dumps(out).encode())
+        elif path == "/api/fleet/gate" and all(isinstance(body.get(k), str) for k in ("gate", "option")):
+            code, out = fleet.gate_resolve(FLEET, body["gate"], body["option"])
+            FLEET_WAKE.set()
+            return self.send(code, json.dumps(out).encode())
         elif path == "/api/fleet/reopen" and isinstance(body.get("decision"), str):
             code, out = fleet.decision_reopen(body["decision"], body.get("rev") if isinstance(body.get("rev"), str) else None)
             FLEET_WAKE.set()

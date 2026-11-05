@@ -48,7 +48,13 @@ assert all(v["ok"] for v in st["sources"].values()), st["sources"]
 assert {s["id"]: s["project"] for s in st["sessions"]} == {"wt-coord": "platform", "wt-login": "launchpad", "wt-export": "launchpad",
                                                          "wt-docs": "launchpad", "wt-scratch": "tools", "wt-old": "tools",
                                                          "wt-lead": "platform", "wt-invoice": "launchpad", "wt-tax": "launchpad"}
-assert [(i["project"], i["session"]) for i in items(st, "approval") if i["source"] == "orca-gate"] == [("launchpad", "wt-coord")]
+# A gate sits on the session whose Run owns it (the lead, not the root), with its options as buttons and its time in
+# UTC. A prompt typed there does not answer a gate, so it is never missed.
+gates = [i for i in items(st, "approval") if i["source"] == "orca-gate"]
+assert [(i["project"], i["session"], i["gate"], i["options"]) for i in gates] == [
+    ("platform", "wt-lead", "g1", [{"label": "land"}, {"label": "hold"}])], gates
+assert gates[0]["at"] == fleet.iso(now - dt.timedelta(hours=0.5)) and gates[0]["missed"] is False, gates
+assert [fleet.gate_options(v) for v in ('["land", "hold"]', ["land", "hold"], None, "land")] == [["land", "hold"]] * 2 + [[], ["land"]]
 assert [i["project"] for i in items(st, "decision")] == ["platform"] and all(i["project"] for i in items(st))
 assert {t["id"]: t["project"] for t in st["tasks"]} == {"task_login": "launchpad", "task_export": "launchpad", "task_docs": "launchpad",
                                                        "task_lead": "platform", "task_invoice": "launchpad",
@@ -74,7 +80,7 @@ assert fleet.coderabbit({"commits": {"nodes": [{"commit": {"status": None}}]}}) 
 assert {r["login"]: r["status"] for r in prs[43]["reviewers"]} == {"rev-carol": "requested", "team:docs": "requested"}
 assert {r["login"]: r["status"] for r in prs[42]["reviewers"]} == {"rev-bob": "changes_requested", "lint-bot[bot]": "commented"}
 got = sorted((i["type"], i["session"]) for i in items(st))
-assert got == sorted([("prompt", "wt-docs"), ("question", "wt-export"), ("approval", "wt-coord"), ("login", "wt-scratch"),
+assert got == sorted([("prompt", "wt-docs"), ("question", "wt-export"), ("approval", "wt-lead"), ("login", "wt-scratch"),
                       ("decision", "wt-coord"), ("ready_to_merge", "wt-login"), ("changes_requested", "wt-export"),
                       ("review_comment_received", "wt-export"), ("ci_failed", "wt-export"),
                       ("watcher_down", "wt-coord")]), got  # the demo orchestrator never ran `orch watch-cards`
@@ -528,6 +534,49 @@ for did, verb in ((fleet.decision_add("A", handle="term_coord")["id"], "done"), 
 assert fleet.pending_relays() == [], fleet.pending_relays()
 world.worktrees[0]["agents"][0]["state"] = "working"
 
+# A click on a gate option resolves it in Orca, from the server: only a gate the last read listed open, with one of its
+# own options. Resolved, it leaves Needs you on the next collect, before the next read of its Run.
+calls, real_orca = [], fleet.orca
+
+
+def fake_orca(*a, **k):
+    calls.append(a)
+    if "hold" in a:
+        raise fleet.SourceError("gate_not_pending: already resolved")
+    f.runs = json.loads(json.dumps(f.runs))  # a tick replaced the Run cache while Orca resolved the gate
+    return {"id": "g1", "status": "resolved"}
+
+
+lead = next(w for w in world.worktrees if w["worktreeId"] == "wt-lead")["agents"][0]
+lead["prompt"], clock[0] = "orch status billing", clock[0] + dt.timedelta(minutes=1)
+st = f.tick(force=True)
+assert next(s for s in st["sessions"] if s["id"] == "wt-lead")["last_prompt_at"] == fleet.iso(clock[0])
+assert [i["missed"] for i in items(st, "approval") if i["source"] == "orca-gate"] == [False], "a prompt after the gate is not a miss"
+fleet.orca = fake_orca
+assert fleet.gate_resolve(f, "g1", "maybe")[0] == 400 and fleet.gate_resolve(f, "g9", "land")[0] == 409, "not its option, not open"
+assert fleet.gate_resolve(None, "g1", "land")[0] == 409 and calls == [], "no fleet (ORCH_FLEET=off): no gate is open"
+code, out = fleet.gate_resolve(f, "g1", "hold")
+assert (code, out["ok"], out["reason"]) == (502, False, "gate_not_pending: already resolved"), out
+assert out["line"] == "orca orchestration gate-resolve --id g1 --resolution hold --from term_lead", out
+# Orca lets only the terminal coordinating the gate's Run resolve it, and a server under launchd has no terminal of
+# its own to infer: the server names the Run's coordinator.
+code, out = fleet.gate_resolve(f, "g1", "land")
+assert code == 200 and out["ok"] and out["at"], out
+assert calls[-1] == ("orchestration", "gate-resolve", "--id", "g1", "--resolution", "land", "--from", "term_lead"), calls
+assert not [i for i in items(f.tick(), "approval") if i["source"] == "orca-gate"], "marked in the cache that replaced the old one"
+world.runs["gates"][0]["status"] = "pending"
+saved_runs = world.runs["runs"]
+world.runs["runs"] = [r for r in saved_runs if r["id"] != "run_lead"]
+f.tick(force=True)
+assert fleet.gate_resolve(f, "g1", "land")[0] == 409 and len(calls) == 2, "a Run with no coordinator: nothing to resolve as"
+world.runs["runs"] = saved_runs
+f.tick(force=True)
+fleet.orca = lambda *a, **k: {"status": "resolved"}
+assert fleet.gate_resolve(f, "g1", "land")[0] == 200
+assert fleet.gate_resolve(f, "g1", "land")[0] == 409, "a second click (another tab) is refused"
+fleet.orca = real_orca
+world.runs["gates"][0]["status"] = "pending"
+
 # The page renders a decision escaped: app.js's helpers and fleet.js itself, run in node on a hostile item.
 if shutil.which("node"):
     assets = pathlib.Path(__file__).resolve().parents[1] / "assets" / "dashboard"
@@ -787,6 +836,34 @@ fetch = async (url, o) => {{ if (o && o.body) posts.push([url, JSON.parse(o.body
     assert "decision:d10" not in got["lateAfterDismiss"], got["lateAfterDismiss"]
     assert "decision:d8" in got["earlyUndo"] and "decision:d8" not in got["dismissed"], (got["earlyUndo"], got["dismissed"])
     assert "decision:d6" in got["again"] and "✗ 기록 실패: d6 is dropped" in got["againRow"], (got["again"], got["againRow"])
+
+    # An Orca gate: one button per option. One click asks the server to resolve it, and the result takes the buttons'
+    # place; a refusal says why, with the buttons. Orca takes no resolve back, so there is no Undo.
+    gate = {"key": "gate:g1", "type": "approval", "session": "wt-coord", "gate": "g1", "source": "orca-gate",
+            "title": "Land PR #1?", "options": [{"label": "land"}, {"label": "<b>hold</b>"}], "at": ago(0.5)}
+    js = f"""{helpers}
+{(assets / "fleet.js").read_text()}
+const st = {{sessions: []}}, g = {json.dumps(gate)}, posts = [], out = {{}};
+var S = {{state: {{items: [g]}}}}, pollState = () => {{}};
+let reply = {{code: 502, ok: false, reason: "gate_not_pending"}};
+fetch = async (url, o) => {{ if (o && o.body) posts.push([url, JSON.parse(o.body)]);
+  return {{status: reply.code || 200, ok: !reply.code, json: async () => ({{token: "t", ...reply}})}}; }};
+(async () => {{
+  out.row = itemRow(st, g);
+  await decideAction(g.key, "opt:1"); out.failed = itemRow(st, g);
+  reply = {{ok: true, at: "2026-01-01T00:00:00Z"}}; await decideAction(g.key, "opt:0"); out.done = itemRow(st, g);
+  S.state = {{items: []}}; out.kept = withAnswered(S.state).items.map((i) => i.key);
+  out.posts = posts; process.stdout.write(JSON.stringify(out));
+}})();"""
+    got = json.loads(subprocess.run(["node", "-e", timer_ctx], input=js, capture_output=True, text=True, check=True).stdout)
+    assert got["row"].count('data-decide="opt:') == 2 and ">land</button>" in got["row"] and "&lt;b&gt;hold" in got["row"], got["row"]
+    assert 'data-decide="text"' not in got["row"] and "<b>hold" not in got["row"], got["row"]
+    assert got["posts"] == [["/api/fleet/gate", {"gate": "g1", "option": "<b>hold</b>"}], ["/api/fleet/gate", {"gate": "g1", "option": "land"}]], got["posts"]
+    assert "✗ 실패: gate_not_pending" in got["failed"] and got["failed"].count('data-decide="opt:') == 2, got["failed"]
+    # With no line from the server (the request never reached it), the Copy is still one shell argument per value.
+    assert 'data-copy="orca orchestration gate-resolve --id &#39;g1&#39; --resolution &#39;&lt;b&gt;hold&lt;/b&gt;&#39;"' in got["failed"], got["failed"]
+    assert "✓ g1: land — 기록됨" in got["done"] and 'data-decide="opt:' not in got["done"] and "data-undo=" not in got["done"], got["done"]
+    assert got["kept"] == ["gate:g1"], "the resolved row stays in place while the server drops it"
 
     # A redraw between mousedown and mouseup replaces the pressed button and the browser fires no click, so a quick
     # click across rows was lost now and then. While a pointer is down the redraw waits (once), up to PRESS_MS.
@@ -1537,6 +1614,30 @@ try:
 finally:
     fleet.orca = real_orca
     fleet.RUN_CACHE.clear()
+
+# Orca's concise run-list and gate-list leave out what the fleet reads (a Run's coordinator_handle, legacy and
+# updated_at; a gate's run_id, task_id and created_at): without --full, gates fell to the root and no click resolved.
+def shaped_orca(*args, timeout=30):
+    full = "--full" in args
+    if args[1] == "run-list":
+        run = {"id": "run_l", "objective": "o", "coordinator_handle": "term_l", "legacy": 0, "updated_at": "2026-01-01 00:00:00"}
+        return {"runs": [run if full else {k: run[k] for k in ("id", "objective")}]}
+    if args[1] == "gate-list":
+        gate = {"id": "gate_x", "run_id": "run_l", "task_id": "task_x", "question": "q", "options": '["land","hold"]',
+                "status": "pending", "created_at": "2026-01-01 00:00:00"}
+        return {"gates": [gate if full else {"id": "gate_x", "taskId": "task_x", "status": "pending", "question": "q",
+                                             "options": gate["options"]}]}
+    return {}
+
+
+real_orca, fleet.orca = fleet.orca, shaped_orca
+try:
+    got = fetch_runs()
+finally:
+    fleet.orca = real_orca
+    fleet.RUN_CACHE.clear()
+assert [(r.get("coordinator_handle"), g.get("run_id"), g.get("created_at")) for r in got["runs"] for g in got["gates"]] == [
+    ("term_l", "run_l", "2026-01-01 00:00:00")], got
 
 # The tree's root is the orchestrator even when a lead it dispatched runs a newer Run.
 def tree(run_list, workers, wts, orca_parent=None, declared=(), paths=None):

@@ -212,7 +212,8 @@ def settled_run(got):
 
 
 def fetch_runs():
-    listed = orca("orchestration", "run-list").get("runs", [])
+    # --full: the concise run-list has only id and objective, no coordinator_handle, legacy or updated_at.
+    listed = orca("orchestration", "run-list", "--full").get("runs", [])
     runs = [r for r in listed if not r.get("legacy") and r.get("id") != "run_legacy_local"]
     live = {t.get("handle") for t in orca("terminal", "list").get("terminals", [])}
     out = {"runs": runs, "workers": [], "tasks": [], "gates": []}
@@ -243,8 +244,25 @@ def fetch_run(r, full):
             break
     if not full:
         return {"workers": workers, "tasks": [], "gates": []}
+    # --full: the concise gate-list has no run_id or created_at, and names the task taskId.
     return {"workers": workers, "tasks": orca("orchestration", "task-list", "--run", r["id"]).get("tasks", []),
-            "gates": orca("orchestration", "gate-list", "--run", r["id"]).get("gates", [])}
+            "gates": orca("orchestration", "gate-list", "--run", r["id"], "--full").get("gates", [])}
+
+
+def gate_options(v):
+    """A gate's options: gate-list gives them JSON-encoded ('["land","hold"]'); a list is taken as it is."""
+    if isinstance(v, str):
+        try:
+            v = json.loads(v)
+        except ValueError:
+            pass
+    return [] if v is None else [str(o) for o in (v if isinstance(v, list) else [v])]
+
+
+def gate_at(s):
+    """gate-list's created_at is SQLite's UTC with no zone ("2026-11-05 04:05:56")."""
+    t = parse(s) if s else None
+    return iso(t.replace(tzinfo=t.tzinfo or dt.timezone.utc).astimezone(dt.timezone.utc)) if t else None
 
 
 AUTOMATION_RECENT = 6  # runs kept per automation: the dashboard's Automations page draws them as a row of blocks
@@ -1781,11 +1799,15 @@ class Fleet:
             wt = (w.get("resource") or {}).get("worktreeId") or ""
             ws = sessions.get(wt)
             task_project[w.get("taskId")] = ws["project"] if ws else project_of(wt.partition("::")[2] or None)
+        # A gate is the session's whose terminal coordinates its Run (a lead's gate is the lead's, not the root's).
+        run_owner = {r["id"]: by_handle.get(r.get("coordinator_handle")) for r in self.runs["runs"]}
         for g in self.runs["gates"]:
             if g.get("status") not in ("resolved", "cancelled"):
-                items.append({"key": f"gate:{g['id']}", "type": "approval", "session": root, "title": mask(g.get("question"), 160),
+                items.append({"key": f"gate:{g['id']}", "type": "approval", "gate": g["id"],
+                              "session": run_owner.get(g.get("run_id")) or root, "title": mask(g.get("question"), 160),
                               "project": task_project.get(g.get("task_id")),
-                              "detail": ", ".join(map(str, g.get("options") or [])), "at": g.get("created_at"), "source": "orca-gate"})
+                              "options": [{"label": o} for o in gate_options(g.get("options"))],
+                              "at": gate_at(g.get("created_at")), "source": "orca-gate"})
         # PRs: every one found, with the session that owns it when one does. Only an owned PR raises items: the
         # search finds every PR of mine, and a PR no session works on is the PR page's to show, not the inbox's.
         prs = []
@@ -1840,7 +1862,8 @@ class Fleet:
         # the badges plus the items that belong to no session are the inbox. No local "seen" mark hides any.
         for i in items:
             s = sessions.get(i.get("session"))
-            i["missed"] = bool(s and i["type"] in STICKY_TYPES and s.get("last_prompt_at")
+            # A gate is resolved in Orca, never by a prompt in its session, so a later prompt does not mean it was missed.
+            i["missed"] = bool(s and i["type"] in STICKY_TYPES and i.get("source") != "orca-gate" and s.get("last_prompt_at")
                                and (i.get("at") or "") < s["last_prompt_at"])
         for s in sessions.values():
             mine = [i for i in items if i.get("session") == s["id"]]
@@ -2453,6 +2476,33 @@ def decision_reopen(did, rev=None):
     except ValueError as e:
         return 409, {"ok": False, "reason": str(e)}
     return 200, {"ok": True, "at": iso(utcnow())}  # a snapshot generated after this lists it open again
+
+
+def gate_resolve(f, gid, option):
+    """The page's click on a gate option: Orca's gate-resolve, for a gate the last read listed open and one of its own
+    options. Orca takes no resolve back, so there is no undo. Marked resolved here, it leaves Needs you on the next
+    collect, before the next read of its Run."""
+    runs = f.runs if f else {"runs": [], "gates": []}  # one read of the reference: a tick swaps the whole dict
+    g = next((g for g in runs["gates"] if g.get("id") == gid and g.get("status") not in ("resolved", "cancelled")), None)
+    coord = g and next((r.get("coordinator_handle") for r in runs["runs"] if r["id"] == g.get("run_id")), None)
+    if not g:
+        return 409, {"ok": False, "reason": f"no open gate {gid}"}
+    if option not in gate_options(g.get("options")):
+        return 400, {"ok": False, "reason": f"{gid} has no option {option!r}"}
+    # Orca lets only the terminal coordinating the gate's Run resolve it, and infers the caller from the terminal the
+    # command runs in. This server (under launchd) runs in none, so it names that coordinator.
+    if not coord:
+        return 409, {"ok": False, "reason": f"{gid}: its Run has no coordinator terminal to resolve it as"}
+    args = ("orchestration", "gate-resolve", "--id", gid, "--resolution", option, "--from", coord)
+    try:
+        orca(*args)
+    except SourceError as e:
+        return 502, {"ok": False, "reason": str(e), "line": shlex.join(("orca", *args))}
+    with f.lock:  # a tick may have replaced the Run cache while Orca answered: mark the gate in the current one
+        for x in f.runs["gates"]:
+            if x.get("id") == gid:
+                x["status"] = "resolved"
+    return 200, {"ok": True, "at": iso(utcnow())}
 
 
 def target_working(session, handle):
