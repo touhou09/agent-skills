@@ -255,7 +255,7 @@ function itemRow(st, it, { showSession = true } = {}) {
     <div class="grow"><div class="full"><b>${esc(label)}</b> <span class="dim">${esc(it.title || "")}</span></div>
       <div class="sub muted full">${projBadge(it.project)}${showSession && s ? `<a href="${sessionHref(s.id)}">${esc(s.name)}</a> · ` : ""}${it.pr ? `<span class="mono">${esc(it.pr)}</span> · ` : ""}${esc(it.source || "")}${it.held ? ` · ${tag(it.held_todo ? "to-do" : "held", "")} ${esc(it.held)}` : ""}
       ${it.command ? ` · <span class="mono">${esc(it.command)}</span>` : it.detail ? ` · ${esc(String(it.detail).split("\n")[0])}` : ""}</div>
-      ${it.type === "prompt" ? promptActs(it) : it.type === "decision" ? decisionActs(st, it) : ""}</div>
+      ${it.type === "prompt" ? promptActs(it) : it.type === "decision" ? decisionActs(st, it) : it.gate ? gateActs(it) : ""}</div>
     <span class="acts">${it.missed ? tag("missed", "bad", "alert") : ""}<span class="when">${it.at ? relSpan(it.at) : ""}</span>
       <span class="slot">${safeUrl(it.url) ? link(it.url, icon("link"), "icon-btn") : ""}</span>
       <span class="slot">${copy ? `<button class="icon-btn" data-copy="${esc(copy)}" title="Copy">${icon("copy")}</button>` : ""}</span>
@@ -336,6 +336,18 @@ function decisionActs(st, it) {
       ${r.busy ? '<span class="muted">Recording…</span>' : ""}</div></div>`;
 }
 
+// A pending Orca decision gate: one click on an option has the server run Orca's gate-resolve. The result takes the
+// buttons' place and stays while the server drops the row (withAnswered), as a decision's does. Orca takes no
+// resolve back, so there is no Undo.
+function gateActs(it) {
+  const r = F.decide[it.key] || {};
+  if (r.ok) return `<div class="decision"><div class="decided tone-good"><span>✓ ${esc(it.gate)}: ${esc(r.answer)} — 기록됨</span></div></div>`;
+  const failed = r.ok === false ? `<div class="decided tone-bad"><span>✗ 실패: ${esc(r.reason)}</span>
+    <button class="chip" data-copy="${esc(r.line)}">${icon("copy")}Copy</button></div>` : "";
+  const buttons = (it.options || []).map((o, i) => `<button class="chip" data-decide="opt:${i}" data-key="${esc(it.key)}" ${r.busy ? "disabled" : ""}>${esc(o.label)}</button>`).join("");
+  return `<div class="decision">${failed}<div class="prompt-acts">${buttons}${r.busy ? '<span class="muted">Resolving…</span>' : ""}</div></div>`;
+}
+
 // The server drops an answered decision from Needs you on its next collect. Its row stays for UNDO_MS where it was, so
 // the result and Undo outlive that redraw; an undone one stays, with its buttons, until the server lists it open again.
 // An undone or refused row that a snapshot generated after the undo (the server's reopen time, r.gen) lists again is
@@ -371,9 +383,11 @@ async function decideAction(key, action) {
   // The undo window counts from the send: the server records after it, so Undo ends before its relay (DECISION_UNDO_S).
   const sentAt = Date.now();
   let out;
-  try { out = await fleetPost("/api/fleet/decide", { decision: it.decision, answer }); } catch (err) { out = { ok: false, reason: String(err.message || err) }; }
+  const [url, req, line] = it.gate ? ["/api/fleet/gate", { gate: it.gate, option: answer }, `orca orchestration gate-resolve --id ${it.gate} --resolution ${answer}`]
+    : ["/api/fleet/decide", { decision: it.decision, answer }, `decision ${it.decision}: ${answer}`];
+  try { out = await fleetPost(url, req); } catch (err) { out = { ok: false, reason: String(err.message || err) }; }
   if (F.decide[key] !== mine) return;  // dismissed meanwhile
-  F.decide[key] = { ...out, answer, line: `decision ${it.decision}: ${answer}`, ...(out.ok ? { item: it, idx } : row),
+  F.decide[key] = { ...out, answer, line, ...(out.ok ? { item: it, idx } : row),
     until: (out.ok ? sentAt : Date.now()) + UNDO_MS, ...(out.ok ? { gen: out.at || (S.state || {}).generated_at } : {}) };
   if (out.ok && action === "text") F.draft[key] = "";
   setTimeout(renderView, F.decide[key].until - Date.now() + 100);  // Undo goes, and so does a row the server no longer lists
