@@ -212,7 +212,8 @@ def settled_run(got):
 
 
 def fetch_runs():
-    listed = orca("orchestration", "run-list").get("runs", [])
+    # --full: the concise run-list has only id and objective, no coordinator_handle, legacy or updated_at.
+    listed = orca("orchestration", "run-list", "--full").get("runs", [])
     runs = [r for r in listed if not r.get("legacy") and r.get("id") != "run_legacy_local"]
     live = {t.get("handle") for t in orca("terminal", "list").get("terminals", [])}
     out = {"runs": runs, "workers": [], "tasks": [], "gates": []}

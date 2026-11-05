@@ -1615,6 +1615,30 @@ finally:
     fleet.orca = real_orca
     fleet.RUN_CACHE.clear()
 
+# Orca's concise run-list and gate-list leave out what the fleet reads (a Run's coordinator_handle, legacy and
+# updated_at; a gate's run_id, task_id and created_at): without --full, gates fell to the root and no click resolved.
+def shaped_orca(*args, timeout=30):
+    full = "--full" in args
+    if args[1] == "run-list":
+        run = {"id": "run_l", "objective": "o", "coordinator_handle": "term_l", "legacy": 0, "updated_at": "2026-01-01 00:00:00"}
+        return {"runs": [run if full else {k: run[k] for k in ("id", "objective")}]}
+    if args[1] == "gate-list":
+        gate = {"id": "gate_x", "run_id": "run_l", "task_id": "task_x", "question": "q", "options": '["land","hold"]',
+                "status": "pending", "created_at": "2026-01-01 00:00:00"}
+        return {"gates": [gate if full else {"id": "gate_x", "taskId": "task_x", "status": "pending", "question": "q",
+                                             "options": gate["options"]}]}
+    return {}
+
+
+real_orca, fleet.orca = fleet.orca, shaped_orca
+try:
+    got = fetch_runs()
+finally:
+    fleet.orca = real_orca
+    fleet.RUN_CACHE.clear()
+assert [(r.get("coordinator_handle"), g.get("run_id"), g.get("created_at")) for r in got["runs"] for g in got["gates"]] == [
+    ("term_l", "run_l", "2026-01-01 00:00:00")], got
+
 # The tree's root is the orchestrator even when a lead it dispatched runs a newer Run.
 def tree(run_list, workers, wts, orca_parent=None, declared=(), paths=None):
     fast = {"worktrees": [{"worktreeId": w, "path": (paths or {}).get(w, f"/work/{w}"), "displayName": w, "agents": [],
