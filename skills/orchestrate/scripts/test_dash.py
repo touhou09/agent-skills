@@ -257,6 +257,9 @@ body = json.dumps({"decision": "d1", "answer": "CSV"}).encode()
 assert post({"Host": host}, "/api/fleet/decide") == 403 and answers == []
 assert post({"Host": host, "X-Dash-Token": dash.TOKEN}, "/api/fleet/decide") == 200
 assert answers == [("d1", "CSV")], answers
+reopened, dash.fleet.decision_reopen = [], lambda *a: reopened.append(a) or (200, {"ok": True})
+assert post({"Host": host}, "/api/fleet/reopen") == 403 and reopened == []
+assert post({"Host": host, "X-Dash-Token": dash.TOKEN}, "/api/fleet/reopen") == 200 and reopened == [("d1", None)], reopened
 # PC load: pressure.py's history of the demo's seeded rounds, through the route; a missing script is an error row.
 pr = json.loads(urllib.request.urlopen(f"{base}/api/fleet/pressure?hours=24").read())
 assert pr["hours"] == 24 and len(pr["series"]) > 400 and pr["last"]["level"] == "warn", {k: pr.get(k) for k in ("hours", "last")}

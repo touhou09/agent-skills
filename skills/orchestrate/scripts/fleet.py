@@ -2306,6 +2306,7 @@ def inbox_resolve(key):
 DECISION_BODY_MAX = 4000
 DECISION_ANSWER_MAX = 1900  # the page's answer box; "decision <id>: " plus this stays inside send()'s 2000
 DECISION_KEEP_S = 7 * 86400  # closed decisions are kept this long, then dropped from the file
+DECISION_UNDO_S = 12  # a page answer waits this long before relay: the page's 10 s undo (UNDO_MS in fleet.js) plus a margin
 
 
 def change_decisions(change):
@@ -2358,7 +2359,7 @@ def decision_close(did, status, answer=None, relay=False):
         if d.get("status") == "open":
             d.update(status=status, answer=mask(answer, DECISION_ANSWER_MAX), closed_at=iso(utcnow()))
             if relay:
-                d["delivered"] = False
+                d.update(delivered=False, rev=os.urandom(6).hex())  # names this answer for the page's undo
         elif d.get("status") == "done" and d.get("delivered") is False and not relay:
             d.update(delivered=True) if status == "done" else d.update(status=status)
         elif d.get("status") == "done" and status == "dropped" and not relay:
@@ -2406,7 +2407,7 @@ def relay_decision(did, sender=None, skip_working=False):
     session, handle = decision_target(d, state)
     if not session:
         return {"ok": False, "reason": "no orchestrator or lead session in the fleet state", "typed": False}
-    if skip_working and session.get("phase") == "working":
+    if skip_working and target_working(session, handle):
         return {"ok": False, "reason": "the orchestrator or lead is working", "typed": False}
     _, out = send(session["id"], f"decision {did}: {d.get('answer')}", handle, sender)
     if out.get("typed"):
@@ -2416,30 +2417,62 @@ def relay_decision(did, sender=None, skip_working=False):
     return out
 
 
-def decision_answer(did, answer, sender=None):
-    """The page's answer: recorded and closed first, as `orch decide done` would, then relayed to the coordinator's
-    terminal if it is idle. A busy coordinator is not a failure: relay_decisions retries on a later collect."""
+def decision_answer(did, answer):
+    """The page's answer: recorded and closed, as `orch decide done` would. relay_decisions types it into the
+    coordinator's terminal on a collect after DECISION_UNDO_S, so the page's undo (decision_reopen) can still take it back."""
     answer = " ".join((answer or "").split())
     if not answer or len(answer) > DECISION_ANSWER_MAX:
         return 400, {"ok": False, "reason": f"an answer of 1 to {DECISION_ANSWER_MAX} characters"}
     try:
-        decision_close(did, "done", answer, relay=True)
+        d = decision_close(did, "done", answer, relay=True)
     except ValueError as e:
         return 409, {"ok": False, "reason": str(e)}
-    with RELAY_LOCK:
-        out = relay_decision(did, sender) or {}
-    return 200, {"ok": True, "recorded": True, "delivered": bool(out.get("typed")), "reason": out.get("reason"),
+    # at: when it was recorded. The page's undo sends it back, and the page holds "recorded" until a snapshot after it.
+    return 200, {"ok": True, "recorded": True, "delivered": False, "at": d["closed_at"], "rev": d["rev"],
                  "line": f"decision {did}: {mask(answer, DECISION_ANSWER_MAX)}"}
 
 
+def decision_reopen(did, rev=None):
+    """The page's undo: an answer given on the page that has not been typed into the coordinator's terminal is taken
+    back, and the decision is open again. Under RELAY_LOCK, so it never races a relay of the same answer. rev
+    (decision_answer's) names the answer: a retried undo never takes back a later answer from another tab."""
+    def reopen(store):
+        d = store.get("decisions", {}).get(did)
+        if not d:
+            raise ValueError(f"no decision {did}")
+        if rev and d.get("rev") != rev:
+            raise ValueError(f"{did} was answered again since")
+        if d.get("status") != "done" or d.get("delivered") is not False:
+            raise ValueError(f"{did} already reached the orchestrator or lead" if d.get("delivered") else f"{did} is {d.get('status')}")
+        for k in ("answer", "closed_at", "delivered", "rev"):
+            d.pop(k, None)
+        d["status"] = "open"
+    try:
+        with RELAY_LOCK:
+            change_decisions(reopen)
+    except ValueError as e:
+        return 409, {"ok": False, "reason": str(e)}
+    return 200, {"ok": True, "at": iso(utcnow())}  # a snapshot generated after this lists it open again
+
+
+def target_working(session, handle):
+    """Whether the agent in the answer's terminal is working. Not the session's phase: another agent working in the
+    same session would hold an answer its idle terminal can take. With no agent matched, the session's phase."""
+    pane = next((t.get("pane") for t in session.get("terminals") or [] if t.get("handle") == handle), None)
+    agent = next((a for a in session.get("agents") or [] if pane and a.get("pane") == pane), None)
+    return (agent or session).get("state" if agent else "phase") == "working"
+
+
 def relay_decisions(sender=None):
-    """Retry every answer the coordinator has not received, skipping a coordinator whose session is working (its
-    title would refuse anyway). Called after each collect; returns the ids delivered."""
+    """Type every page answer the coordinator has not received and that is past the undo window, skipping a
+    coordinator whose session is working (its title would refuse anyway). Called after each collect; returns the ids delivered."""
     if not pending_relays() or not RELAY_LOCK.acquire(blocking=False):
         return []
     try:
         sender = sender or load_sync()
-        return [d["id"] for d in pending_relays() if sender and (relay_decision(d["id"], sender, skip_working=True) or {}).get("typed")]
+        cut = iso(utcnow() - dt.timedelta(seconds=DECISION_UNDO_S))
+        return [d["id"] for d in pending_relays() if sender and (d.get("closed_at") or "") <= cut
+                and (relay_decision(d["id"], sender, skip_working=True) or {}).get("typed")]
     finally:
         RELAY_LOCK.release()
 

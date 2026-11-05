@@ -953,11 +953,27 @@ function viewActivity(st) {
 
 const VIEWS = { overview: viewOverview, issues: viewIssues, prs: viewPrs, tasks: viewTasks, workers: viewWorkers, activity: viewActivity };
 
+// A redraw between mousedown and mouseup replaces the pressed button, and the browser then fires no click: a quick
+// click across rows was lost now and then. While a pointer is down the redraw waits and runs right after the click;
+// PRESS_MS caps the wait for a pointerup that never comes (released outside the window).
+const PRESS = { down: false, at: 0, waiting: false }, PRESS_MS = 1000;
+function pressHolds() {
+  if (!PRESS.down || Date.now() - PRESS.at > PRESS_MS) return false;
+  if (!PRESS.waiting) { PRESS.waiting = true; setTimeout(() => { if (PRESS.waiting) { PRESS.waiting = false; renderView(); } }, PRESS_MS); }
+  return true;
+}
+document.addEventListener("pointerdown", () => { PRESS.down = true; PRESS.at = Date.now(); }, true);
+["pointerup", "pointercancel"].forEach((t) => document.addEventListener(t, () => {
+  PRESS.down = false;
+  if (PRESS.waiting) setTimeout(() => { if (PRESS.waiting) { PRESS.waiting = false; renderView(); } });  // after the click
+}, true));
+
 function renderView() {
+  if (pressHolds()) return;
   const view = $("#view"), st = S.state;
   const focusId = document.activeElement?.id, sel = document.activeElement?.selectionStart;
   if (!st) view.innerHTML = `<div class="loading">${S.down ? (isFleet() ? "The fleet collector is not running (ORCH_FLEET=off?) or the server is down." : "Cannot reach the dashboard server.") : "Loading…"}</div>`;
-  else if (isFleet()) { view.innerHTML = FLEET_VIEWS[S.section](st); applyFreshness(); }
+  else if (isFleet()) { view.innerHTML = FLEET_VIEWS[S.section](withAnswered(st)); applyFreshness(); }
   else { view.innerHTML = VIEWS[S.section](st); redrawCharts(); applyFreshness(); }
   if (focusId && $("#" + focusId)) { const el = $("#" + focusId); el.focus(); if (sel != null && el.setSelectionRange) el.setSelectionRange(sel, sel); }
   const waiting = isFleet() && st ? (st.items || []).length : 0;
@@ -1022,6 +1038,7 @@ async function pollState() {
     if (!r.ok) throw new Error(String(r.status));
     S.etag = r.headers.get("ETag");
     const next = await r.json();
+    if (isFleet()) releaseKept(next);
     const quiet = isFleet() && S.state && fleetBody(S.state) === fleetBody(next);
     S.state = next;
     if (isFleet()) S.fleet = next;

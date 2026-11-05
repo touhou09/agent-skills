@@ -76,7 +76,7 @@ const EDGE = {
 };
 const CI_TONE = { success: "good", failure: "bad", pending: "warn" };
 
-const F = { token: null, draft: {}, confirm: null, chat: {}, arm: null, prompt: {}, decide: {}, tlShow: {}, tlOpen: new Set(), stageFold: new Set(), jobOpen: new Set() };
+const F = { token: null, draft: {}, confirm: null, chat: {}, arm: {}, armLapsed: new Set(), prompt: {}, decide: {}, tlShow: {}, tlOpen: new Set(), stageFold: new Set(), jobOpen: new Set() };
 
 // route() hands over "#/fleet/<section>[/<arg>]"; the only argument is a session id.
 // The Work page's stage table is the Stages page now: an old #/fleet/work link opens it.
@@ -89,7 +89,10 @@ function fleetSection(section, arg) {
 const BY_ID = new WeakMap();  // one map per state, not one per rendered row
 const byId = (st) => BY_ID.get(st) || BY_ID.set(st, Object.fromEntries((st.sessions || []).map((s) => [s.id, s]))).get(st);
 // A tick that changed only timestamps needs the freshness bar redrawn, not the whole view (hover and scroll survive).
-const fleetBody = (st) => JSON.stringify({ ...st, generated_at: 0, sources: 0 });
+// A decision shows as answered while the snapshot is no newer than its answer (decisionActs), so the first snapshot
+// after it redraws once, even with the same body.
+const fleetBody = (st) => JSON.stringify({ ...st, generated_at: 0, sources: 0,
+  held: Object.keys(F.decide).filter((k) => F.decide[k].ok && F.decide[k].gen != null && st.generated_at <= F.decide[k].gen) });
 const sessionHref = (id) => `#/fleet/session/${encodeURIComponent(id)}`;
 const phaseDot = (s) => `<span class="${s.phase === "working" ? "pulse" : "dot-s"} ph-${esc(s.phase)}" title="${esc(PHASE[s.phase] || s.phase)}"></span>`;
 const phaseKeys = (only = Object.keys(PHASE), n = null) => only.map((p) => `<span>${phaseDot({ phase: p })}${n ? `${n(p)} ` : ""}${PHASE[p]}</span>`).join("");
@@ -261,27 +264,33 @@ function itemRow(st, it, { showSession = true } = {}) {
 
 // Approve and Deny take a second click (the list re-renders under the pointer every tick); Open does not.
 function promptActs(it) {
-  const r = F.prompt[it.key], armed = F.arm && F.arm.key === it.key ? F.arm.action : "";
+  const r = F.prompt[it.key], armed = armedOf(it.key);
   const btn = (a, label, ic) => a === "open" || (it.answers || []).includes(a)
     ? `<button class="chip ${armed === a ? "armed tone-warn" : ""}" data-prompt="${a}" data-key="${esc(it.key)}" ${r && r.busy ? "disabled" : ""}>${icon(ic)}${armed === a ? `Confirm ${label.toLowerCase()}` : label}</button>` : "";
-  const msg = !r || r.busy ? "" : r.ok ? (r.action === "open" ? "Opened in Orca." : "Sent; the dialog closed.")
-    : r.typed ? `Pressed ${r.key}, but not confirmed (${r.reason}). Check the terminal.` : `Not sent: ${r.reason}.`;
-  return `<div class="prompt-acts">${btn("approve", "Approve", "check")}${btn("deny", "Deny", "x")}${btn("open", "Open terminal", "arrow")}
-    ${r && r.busy ? '<span class="muted">Checking the screen…</span>' : lapsedNote(it.key) || (msg ? `<span class="toned tone-${r.ok ? "good" : r.typed ? "warn" : "bad"}">${esc(msg)}</span>` : "")}</div>`;
+  // The confirming click's result takes a block of its own, as a decision's does, so it cannot read as "nothing happened".
+  const label = r && (r.action === "deny" ? "Deny" : "Approve");
+  const msg = !r || r.busy ? "" : r.ok ? (r.action === "open" ? "✓ Orca 에서 터미널을 열었다" : `✓ ${label} 보냄: 확인 창이 닫혔다`)
+    : r.typed ? `⚠ ${r.key} 을 눌렀지만 확인하지 못했다 (${r.reason}). 터미널을 확인하라.` : `✗ 보내지 못함: ${r.reason}`;
+  const note = r && r.busy ? '<span class="muted">Checking the screen…</span>' : lapsedNote(it.key)
+    || (armed ? '<span class="toned tone-warn">30초 안에 한 번 더 누르면 보낸다</span>' : "");
+  return `<div class="prompt-acts">${btn("approve", "Approve", "check")}${btn("deny", "Deny", "x")}${btn("open", "Open terminal", "arrow")}${note}</div>
+    ${msg && !armed && !lapsedNote(it.key) ? `<div class="decided tone-${r.ok ? "good" : r.typed ? "warn" : "bad"}"><span>${esc(msg)}</span></div>` : ""}`;
 }
 
 // Long enough for a remote browser (redraw and click lag) to show "Confirm …" and take the second click.
 const CONFIRM_MS = 30e3;
-const lapsedNote = (key) => F.armLapsed === key ? `<span class="toned tone-warn">Not confirmed within ${CONFIRM_MS / 1e3} s; click again.</span>` : "";
+const lapsedNote = (key) => F.armLapsed.has(key) ? `<span class="toned tone-warn">Not confirmed within ${CONFIRM_MS / 1e3} s; click again.</span>` : "";
+const armedOf = (key) => (F.arm[key] || {}).action || "";
 
-// True on the second click of the same button within CONFIRM_MS; the first click only arms it. A window that lapses
-// leaves a note on its row (F.armLapsed), so an unconfirmed click does not read as "nothing happened".
+// True on the second click of the same button within CONFIRM_MS; the first click only arms it. Each item keeps its own
+// arm and timer (F.arm[key]), so arming one prompt never disarms another. A window that lapses leaves a note on
+// its row (F.armLapsed), so an unconfirmed click does not read as "nothing happened".
 function confirmed(key, action) {
-  clearTimeout(F.armTimer);
-  F.armLapsed = null;
-  if (F.arm && F.arm.key === key && F.arm.action === action) { F.arm = null; return true; }
-  F.arm = { key, action };
-  F.armTimer = setTimeout(() => { F.arm = null; F.armLapsed = key; renderView(); }, CONFIRM_MS);
+  const a = F.arm[key];
+  if (a) clearTimeout(a.timer);
+  F.armLapsed.delete(key);
+  if (a && a.action === action) { delete F.arm[key]; return true; }
+  F.arm[key] = { action, timer: setTimeout(() => { delete F.arm[key]; F.armLapsed.add(key); renderView(); }, CONFIRM_MS) };
   renderView();
   return false;
 }
@@ -289,7 +298,9 @@ function confirmed(key, action) {
 async function promptAction(key, action) {
   const it = ((S.state || {}).items || []).find((i) => i.key === key);
   if (!it || (action !== "open" && !confirmed(key, action))) return;
-  F.armLapsed = null;  // Open skips confirmed(): its result must not sit under an old lapse note
+  // Open skips confirmed(): its result must not sit under an old lapse note or an armed Approve.
+  F.armLapsed.delete(key);
+  if (action === "open" && F.arm[key]) { clearTimeout(F.arm[key].timer); delete F.arm[key]; }
   F.prompt[key] = { busy: true }; renderView();
   let out;
   try { out = await fleetPost("/api/fleet/prompt", { session: it.session, prompt: it.prompt, action }); } catch (err) { out = { ok: false, reason: String(err.message || err) }; }
@@ -297,37 +308,91 @@ async function promptAction(key, action) {
   renderView();
 }
 
-// A decision registered with `orch decide`: each option, or a typed answer, answers it on a second click. The server
-// records the answer and closes the decision first, then types "decision <id>: <answer>" into the orchestrator's or lead's terminal
-// now if it is idle, or on a later collect once it is: a busy orchestrator or lead never makes the answer fail.
+// A decision registered with `orch decide`: one click on an option, or Send with a typed answer, answers it. The result
+// takes the buttons' place, with Undo for UNDO_MS. The server records the answer and closes the decision, and types
+// "decision <id>: <answer>" into the orchestrator's or lead's terminal on a collect after the undo window (DECISION_UNDO_S).
+const UNDO_MS = 10e3, REOPEN_MS = 60e3;
+
 function decisionActs(st, it) {
-  const r = F.decide[it.key], armed = F.arm && F.arm.key === it.key ? F.arm.action : "", off = r && r.busy ? "disabled" : "";
-  const opts = it.options || [];
-  const chip = (action, label, extra = "") => `<button class="chip ${armed === action ? "armed tone-warn" : ""}" data-decide="${action}" data-key="${esc(it.key)}" ${extra} ${off}>${label}</button>`;
-  const buttons = opts.map((o, i) => chip(`opt:${i}`, `${it.recommend === i + 1 ? icon("check") : ""}${armed === `opt:${i}` ? "Confirm " : ""}${esc(o.label)}`,
+  const r = F.decide[it.key] || {}, opts = it.options || [];
+  // Past UNDO_MS a snapshot collected before the answer (r.gen, the server's record time) still lists it: it stays
+  // answered. One collected after it that lists it means the server has it open again (a lost undo reply, another tab).
+  const live = Date.now() < r.until, stale = r.gen != null && st.generated_at <= r.gen;
+  if (r.ok && (live || stale || r.undoBusy)) {
+    const undo = live && (!r.undoErr || r.undoRetry) ? `<button class="chip" data-undo="${esc(it.key)}" ${r.undoBusy ? "disabled" : ""}>되돌리기</button>` : "";
+    return `<div class="decision"><div class="decided tone-good"><span>✓ ${esc(it.decision)}: ${esc(r.answer)} — 기록됨</span>${undo}</div>
+      ${r.undoErr ? `<div class="decided tone-bad"><span>✗ 되돌리기 실패: ${esc(r.undoErr)}</span></div>` : ""}</div>`;
+  }
+  const off = r.busy ? "disabled" : "";
+  const chip = (action, label, extra = "") => `<button class="chip" data-decide="${action}" data-key="${esc(it.key)}" ${extra} ${off}>${label}</button>`;
+  const buttons = opts.map((o, i) => chip(`opt:${i}`, `${it.recommend === i + 1 ? icon("check") : ""}${esc(o.label)}`,
     `title="${esc(o.description || o.label)}${it.recommend === i + 1 ? " (recommended)" : ""}"`)).join("");
-  const line = armed ? `decision ${it.decision}: ${armed === "text" ? (F.draft[it.key] || "").trim() : (opts[+armed.slice(4)] || {}).label}` : "";
-  const msg = !r || r.busy ? "" : !r.ok ? `Not recorded: ${r.reason}.`
-    : r.delivered ? "Recorded and sent to the orchestrator or lead." : "Recorded; will relay to the orchestrator or lead when it is idle.";
+  const failed = r.ok === false ? `<div class="decided tone-bad"><span>✗ 기록 실패: ${esc(r.reason)}</span>
+    <button class="chip" data-copy="${esc(r.line)}">${icon("copy")}Copy</button></div>` : "";
   const hint = `<div class="sub muted">Or answer in the orchestrator's or lead's terminal: <span class="mono">${esc(it.decision)}: ${esc((opts[it.recommend - 1] || {}).label || "<answer>")}</span></div>`;
-  return `<div class="decision">${buttons ? `<div class="prompt-acts">${buttons}</div>` : ""}${hint}
+  return `<div class="decision">${failed}${buttons ? `<div class="prompt-acts">${buttons}</div>` : ""}${hint}
     <div class="prompt-acts"><input id="decide-${esc(it.decision)}" data-decide-input="${esc(it.key)}" class="search" maxlength="1900" autocomplete="off"
-        placeholder="Or type an answer" value="${esc(F.draft[it.key] || "")}" ${off}>${chip("text", `${icon("send")}${armed === "text" ? "Confirm send" : "Send"}`)}
-      ${r && r.busy ? '<span class="muted">Recording…</span>' : line ? `<span class="muted ellipsis">answers <span class="mono">${esc(line)}</span></span>`
-        : lapsedNote(it.key) || (msg ? `<span class="toned tone-${r.ok ? "good" : "bad"}">${esc(msg)}</span>${r.ok ? "" : `<button class="chip" data-copy="${esc(r.line)}">${icon("copy")}Copy</button>`}` : "")}</div></div>`;
+        placeholder="Or type an answer" value="${esc(F.draft[it.key] || "")}" ${off}>${chip("text", `${icon("send")}Send`)}
+      ${r.busy ? '<span class="muted">Recording…</span>' : ""}</div></div>`;
+}
+
+// The server drops an answered decision from Needs you on its next collect. Its row stays for UNDO_MS where it was, so
+// the result and Undo outlive that redraw; an undone one stays, with its buttons, until the server lists it open again.
+// An undone or refused row that a snapshot generated after the undo (the server's reopen time, r.gen) lists again is
+// the server's from now on: closed later, it leaves the page. An older one (collected before the answer, or a poll
+// answered out of order) does not count. pollState calls this on every snapshot, redrawn or not.
+function releaseKept(st) {
+  const have = new Set((st.items || []).map((i) => i.key));
+  Object.entries(F.decide).forEach(([k, r]) => { if (have.has(k) && !r.ok && !r.busy && (r.gen == null || st.generated_at > r.gen)) delete r.item; });
+}
+
+function withAnswered(st) {
+  releaseKept(st);
+  const have = new Set((st.items || []).map((i) => i.key));
+  const kept = Object.entries(F.decide).filter(([k, r]) => r.item && !have.has(k) && (Date.now() < r.until || r.undoBusy || r.busy)).map(([, r]) => r);
+  if (!kept.length) return st;
+  const items = (st.items || []).slice(), counts = { ...st.counts };
+  kept.sort((a, b) => a.idx - b.idx).forEach((r) => {
+    items.splice(Math.min(r.idx, items.length), 0, r.item);
+    counts[r.item.type] = (counts[r.item.type] || 0) + 1;  // so the Inbox's type filter stays on it
+  });
+  return { ...st, items, counts };
 }
 
 async function decideAction(key, action) {
-  const st = S.state || {}, it = (st.items || []).find((i) => i.key === key);
-  if (!it) return;
+  const items = withAnswered(S.state || {}).items || [], idx = items.findIndex((i) => i.key === key), it = items[idx];
+  const prev = F.decide[key] || {};
+  if (!it || prev.busy || prev.undoBusy) return;
   const answer = action === "text" ? (F.draft[key] || "").trim() : ((it.options || [])[+action.slice(4)] || {}).label;
-  if (!answer || !confirmed(key, action)) return;
-  const line = `decision ${it.decision}: ${answer}`;
-  F.decide[key] = { busy: true, line }; renderView();
+  if (!answer) return;
+  // A row kept after an undo (no poll lists it open yet) stays kept through this request and a refusal.
+  const row = prev.item ? { item: prev.item, idx: prev.idx, gen: prev.gen } : {};
+  const mine = F.decide[key] = { busy: true, ...row, until: prev.until }; renderView();
+  // The undo window counts from the send: the server records after it, so Undo ends before its relay (DECISION_UNDO_S).
+  const sentAt = Date.now();
   let out;
   try { out = await fleetPost("/api/fleet/decide", { decision: it.decision, answer }); } catch (err) { out = { ok: false, reason: String(err.message || err) }; }
-  F.decide[key] = { line, ...out };
+  if (F.decide[key] !== mine) return;  // dismissed meanwhile
+  F.decide[key] = { ...out, answer, line: `decision ${it.decision}: ${answer}`, ...(out.ok ? { item: it, idx } : row),
+    until: (out.ok ? sentAt : Date.now()) + UNDO_MS, ...(out.ok ? { gen: out.at || (S.state || {}).generated_at } : {}) };
   if (out.ok && action === "text") F.draft[key] = "";
+  setTimeout(renderView, F.decide[key].until - Date.now() + 100);  // Undo goes, and so does a row the server no longer lists
+  renderView();
+}
+
+async function undoAction(key) {
+  const r = F.decide[key];
+  if (!r || !r.ok || r.undoBusy) return;
+  r.undoBusy = true; renderView();
+  let out;
+  // No reply at all (the network) may not have reached the server: Undo stays for the rest of its window.
+  try { out = await fleetPost("/api/fleet/reopen", { decision: r.item.decision, rev: r.rev }); } catch (err) { out = { ok: false, reason: String(err.message || err), retry: true }; }
+  if (F.decide[key] !== r) return;  // dismissed meanwhile
+  // A refusal stays on screen for another UNDO_MS, even when it came back after the window. An undone row waits for a
+  // collect to list it open again. ponytail: a fixed REOPEN_MS, not "until listed", so a decision dropped meanwhile does not stay forever.
+  F.decide[key] = out.ok ? { item: r.item, idx: r.idx, until: Date.now() + REOPEN_MS, gen: out.at || (S.state || {}).generated_at }
+    : { ...r, undoBusy: false, undoErr: out.reason, undoRetry: !!out.retry, until: out.retry ? r.until : Date.now() + UNDO_MS };
+  setTimeout(renderView, F.decide[key].until - Date.now() + 100);
   renderView();
 }
 
@@ -1663,6 +1728,8 @@ document.addEventListener("click", async (e) => {
   if (answer) { promptAction(answer.dataset.key, answer.dataset.prompt); return; }
   const decide = e.target.closest("[data-decide]");
   if (decide) { decideAction(decide.dataset.key, decide.dataset.decide); return; }
+  const undo = e.target.closest("[data-undo]");
+  if (undo) { undoAction(undo.dataset.undo); return; }
   const more = e.target.closest("[data-tl-more]");
   if (more) { const k = more.dataset.tlMore; F.tlShow[k] = (F.tlShow[k] || TL_STEP) + TL_STEP; renderView(); return; }
   const desc = e.target.closest("[data-tl-open]");
@@ -1677,5 +1744,5 @@ document.addEventListener("click", async (e) => {
     return;
   }
   t.disabled = true;
-  try { await fleetPost("/api/fleet/dismiss", { key: t.dataset.dismiss }); t.closest("li").remove(); } catch (err) { t.disabled = false; }
+  try { await fleetPost("/api/fleet/dismiss", { key: t.dataset.dismiss }); delete F.decide[t.dataset.dismiss]; t.closest("li").remove(); } catch (err) { t.disabled = false; }
 });
