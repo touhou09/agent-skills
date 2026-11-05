@@ -94,7 +94,9 @@ VERIFY      Exact commands, or the repo's .claude/skills/verify-<app> feature to
             waits for the result that run logs.
             A read or act already refused follows FORBIDDEN's refused-act paragraph: no plan is
             written here for it afterwards.
-TIMEBOX     Rough cap. When it runs out, report partial findings with --outcome failed and stop.
+TIMEBOX     Rough cap on working time. Time spent waiting for the answer to an `ask` does not
+            count, and a cap that runs out during that wait keeps the wait. Otherwise, when it
+            runs out, report partial findings with --outcome failed and stop.
 LAND        After review, record the verdict on the reviewed head: orch verdict <slug> --pr <N>
             --sha <head> --source <independent-review, review:<reviewer>, verifier:<reviewer>,
             or live:<feature>; never the implementer>. When this brief has you wait for the
@@ -239,7 +241,9 @@ CONTEXT     Files, PRs and links to read. The facts you already have, pasted.
 ACCEPTANCE  Checkable criteria, one per line.
 VERIFY      Exact commands, and the output that proves each criterion.
             A browser check: `orch hold browser` before opening it, `orch release browser` after.
-TIMEBOX     Rough cap. When it runs out, report partial findings with --outcome failed and stop.
+TIMEBOX     Rough cap on working time. Time spent waiting for the answer to an `ask` does not
+            count, and a cap that runs out during that wait keeps the wait. Otherwise, when it
+            runs out, report partial findings with --outcome failed and stop.
 FORBIDDEN   Other work. No force-push. Nothing sent outside Orca. The refused-act paragraph of the
             program brief's FORBIDDEN above, pasted verbatim. <unit-specific bans>
 APPROVED    The acts the human already approved for this unit, with their words and date. Inside
