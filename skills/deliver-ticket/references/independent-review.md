@@ -9,6 +9,12 @@ Read the repository's data-sharing restrictions before selecting a reviewer. A b
 external services applies to every provider; use a reviewer within the allowed boundary or
 report review unavailable. Include that restriction in delegated review instructions.
 
+A read-only reviewer reads the product's code with read tools and runs it only through the
+repository's tests. Importing or running a product module outside them executes its
+import-time code on the real paths (a database migration, key files loaded), whatever the
+instructions say about not opening those paths. Put that rule in delegated review
+instructions, next to any path the reviewer must not touch.
+
 Check correctness, security, acceptance criteria and regressions. Use adversarial design
 questions when the change alters a public contract or a difficult invariant. Findings need
 file locations, a concrete failure case and severity. Record the reviewer, reviewed SHA,
