@@ -45,10 +45,12 @@ PEERS       Who to settle shared files and landing order with directly, and abou
             lead only what changes scope, order or the predicate. Read your own mail with
             `check --terminal $ORCA_TERMINAL_HANDLE` and ack each delivery (`--ack <deliveryId>`),
             or the same batch comes back. A decision the lead must answer: `ask --question
-            --options`, which waits for the lead's `reply`. A timeout (exit 1; `"timedOut": true`
-            under `--json`) is not a failure: run the resume command Orca prints, or the
-            preamble's `ask` with `--resume <messageId> --timeout-ms 1800000` (the most one wait
-            allows), until it is answered, never a second question. While
+            --options`. From a Dispatch it returns at once and says to end your turn: do that,
+            and the lead's `reply` arrives as mail that wakes you. To block in the call instead,
+            add `--wait --timeout-ms 1800000` (the most one wait allows). A timeout of that wait
+            (exit 1; `"timedOut": true` under `--json`) is not a failure: run the resume command
+            Orca prints, or the preamble's `ask` with `--resume <messageId> --timeout-ms 1800000`,
+            until it is answered, never a second question. While
             it waits it shows in the dashboard's Needs you. `--type escalation` is for a blocker
             the lead must act on, not for a choice. Never send a question as a status and end
             your turn: a status wakes no wait, and waking an idle agent on mail is best-effort.
@@ -97,7 +99,11 @@ VERIFY      Exact commands, or the repo's .claude/skills/verify-<app> feature to
 TIMEBOX     Rough cap on working time. Time spent waiting for the answer to an `ask` does not
             count, and a cap that runs out during that wait keeps the wait. Otherwise, when it
             runs out, report partial findings with --outcome failed and stop.
-LAND        After review, record the verdict on the reviewed head: orch verdict <slug> --pr <N>
+LAND        Load `deliver-ticket` with the Skill tool before the first edit: the PROGRAM line
+            does not load it. Its review loop and cap apply: five rounds unless the ticket sets
+            another; an Act-on finding of the last round is still fixed, and the rest go to the
+            PR body's "남은 검토" list.
+            After review, record the verdict on the reviewed head: orch verdict <slug> --pr <N>
             --sha <head> --source <independent-review, review:<reviewer>, verifier:<reviewer>,
             or live:<feature>; never the implementer>. When this brief has you wait for the
             lead's OK before landing, record the verdict and run `orch land` only after
@@ -252,11 +258,13 @@ HUMAN ONLY  Permission dialogs outside APPROVED, logins, payments, document subm
             any irreversible or outward act not under APPROVED. Ask for these together, once.
 MODEL CALLS Another model (a subagent or an API) only when the task needs it; pick the model
             then, and list each call with its reason in REPORT.
-LAND        A change: its normal flow (deliver-ticket), or the push the owner allows. An investigation: none.
+LAND        A change: its normal flow (`deliver-ticket`, loaded with the Skill tool before the
+            first edit), or the push the owner allows. An investigation: none.
             Waiting on a review or another outside event: the program brief's LAND sentences from
             "A wait on a human review" through "rate_limit`).", pasted verbatim.
-WAITING     `ask` what you cannot decide, and after a timeout (exit 1) the resume command Orca
-            prints, or the preamble's `ask` with `--resume <messageId> --timeout-ms 1800000`,
+WAITING     `ask` what you cannot decide. It returns at once: end your turn, and the answer wakes
+            you. With `--wait`, after a timeout (exit 1) run the resume command Orca prints,
+            or the preamble's `ask` with `--resume <messageId> --timeout-ms 1800000`,
             until it is answered.
 LINEAGE     As above.
 REPORT      worker_done once: what changed or what was found, the VERIFY output you saw, what remains.
@@ -347,7 +355,7 @@ CLOSE       Once the predicate holds and the program's Close is done: `end-sessi
 - A unit whose result a person opens as a live page (a mockup, a branch preview) gets in VERIFY: its own free port in the preview watcher's range, the server bound to 127.0.0.1, and the tailnet link fetched for 200 before it is reported, by `deliver-ticket` `references/visual-evidence.md` ("A live page for a person"). Two lanes on one port show each other's page. The card never runs `tailscale serve` and never asks for a port to be opened.
 - **Name the card.** Orca's automatic title comes from the first prompt and can be meaningless, unrelated to the ticket. Pass `worker-start --display-name "<ID> <short title>"`. That name sticks; the terminal tab title belongs to the agent, which overwrites a rename.
 - **Plan chains as stacks.** A unit that has to land after another unit's PR builds on that branch (`Base: stacked on #N`), so the chain lands in one merge. Set Base from `gh pr list --state open`, not memory: an open PR the unit needs, or one already doing its scope, is its base. Record it with `orch dep`, not as an Orca dep: an Orca dep would keep this unit from starting until the lower PR had landed. An open PR that changes one of the paths in this unit's SCOPE is its base too, even when the unit needs nothing from it: `orch overlap <slug> --paths <SCOPE paths>` names it (`OVERLAP plan #N`).
-- **A worker's question is an `ask`** (the end of PEERS, or WAITING), resumed after each timeout. Only a dispatched worker can `ask` or escalate; Orca refuses both from a `/goal` card, which asks by `dispatch-card` §2 "Questions". "One inbox wait, always" (SKILL.md Drain) is the rule of the layers above a worker, not a worker's.
+- **A worker's question is an `ask`** (the end of PEERS, or WAITING). It returns at once, the worker ends its turn, and the reply wakes it; that ended turn is not a stall. An `ask --wait` is resumed after each timeout. Only a dispatched worker can `ask` or escalate; Orca refuses both from a `/goal` card, which asks by `dispatch-card` §2 "Questions". "One inbox wait, always" (SKILL.md Drain) is the rule of the layers above a worker, not a worker's.
 - An agent that will use a write tool whose host asks it to load a policy skill before the first write gets, in its brief or prompt, an instruction to load that skill before its first write; otherwise the confirmation comes back in every session and stops it on a dialog.
 - Keep every write inside the worker's worktree except SCOPE's named temporary download directory. A write elsewhere can stop the worker on a permission prompt while Orca still reports it `live`. Anything kept outside it (logs, notes, program files, auto-memory lessons) comes back in the worker's message, and the session that wrote the brief writes it.
 - Size the brief to the unit. A one-command unit collapses to a paragraph that still names the goal, the scope, the verify command, the LAND line and the report shape.
