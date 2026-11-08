@@ -149,7 +149,7 @@ assert not any(i.get("held") for i in items(st)) and [fleet.needs_rank(i) for i 
 assert fleet.trigger_at("2026-11-02 14:30", now).strftime("%Y-%m-%d %H:%M") == "2026-11-02 14:30"
 assert fleet.trigger_at("v1.2 배포 뒤", now) is None and fleet.trigger_at("acme/app#9 머지 뒤", now) is None
 
-# A reload skills-sync could not send sits on its terminal's session (and counts there), titled with the terminal;
+# A reload skills-sync could not send sits on its terminal's session (and counts there), titled with that session;
 # one for a terminal Orca no longer lists is gone.
 pending_path = state_dir.parent / "reload-pending.json"
 fleet.write_atomic(pending_path, json.dumps({"since": "t1", "failed": {
@@ -160,8 +160,8 @@ assert not items(st, "reload_pending"), "still being retried: not the owner's ye
 fleet.RELOAD_FAILS.update(term_login=fleet.RELOAD_ALERT_TRIES, term_export=fleet.RELOAD_ALERT_TRIES)
 st = f.tick(force=True)
 assert sorted((i["session"], i["title"], i["detail"]) for i in items(st, "reload_pending")) == [
-    ("wt-export", "Reload not sent: ◑ ACME-102", "title shows the agent is busy"),
-    ("wt-login", "Reload not sent: ✳ ACME-101", "composer holds a draft")], items(st, "reload_pending")
+    ("wt-export", "Reload not sent: ACME-102 billing export", "title shows the agent is busy"),
+    ("wt-login", "Reload not sent: ACME-101 login flow", "composer holds a draft")], items(st, "reload_pending")
 badges_agree(st)
 
 
@@ -192,7 +192,7 @@ fleet.RELOAD_TRIED.clear()
 pending_path.unlink()
 assert fleet.retry_reloads(fake) == [] and len(fake.calls) == 1
 st = f.tick(force=True)
-assert any(e["kind"] == "item_resolved" and e["text"] == "reload_delivered: Reload not sent: ◑ ACME-102" for e in st["timeline"])
+assert any(e["kind"] == "item_resolved" and e["text"] == "reload_delivered: Reload not sent: ACME-102 billing export" for e in st["timeline"])
 # A reload is the owner's only once the idle terminal refused the dashboard's retry reload_alert_tries times in a row,
 # and it leaves with a timeline line when it is delivered.
 class Refusing(FakeBroadcast):
@@ -210,13 +210,42 @@ for n in range(fleet.RELOAD_ALERT_TRIES):
 assert refusing.calls == ["term_login"] * fleet.RELOAD_ALERT_TRIES
 st = f.tick(force=True)
 assert [i["session"] for i in items(st, "reload_pending")] == ["wt-login"], items(st, "reload_pending")
-delivered = lambda st: sum(e["kind"] == "item_resolved" and e["text"] == "reload_delivered: Reload not sent: ✳ ACME-101"  # noqa: E731
+delivered = lambda st: sum(e["kind"] == "item_resolved" and e["text"] == "reload_delivered: Reload not sent: ACME-101 login flow"  # noqa: E731
                            for e in st["timeline"])
 n = delivered(st)
 pending_path.unlink()
 st = f.tick(force=True)
 assert not items(st, "reload_pending") and delivered(st) == n + 1
 assert delivered(f.tick(force=True)) == n + 1, "once"
+
+
+# A retry refused only because the terminal was busy (skills-sync's idle check is stricter than the session's phase) is
+# not counted, and neither is one refused for the lock (nothing written, the recorded reason stays): the reload is
+# retried until it lands and never becomes an item. A busy refusal does not reset a count already running either.
+class Busy(FakeBroadcast):
+    def broadcast(self, kind, dry_run, only=None):
+        self.calls.append(only)
+        p = json.loads(pending_path.read_text())
+        p["failed"][only] = {"reason": "title shows the agent is busy"}
+        fleet.write_atomic(pending_path, json.dumps(p))
+        return 1
+
+
+for refuser in (Busy(), Refusing()):
+    fleet.write_atomic(pending_path, json.dumps({"since": "t3", "failed": {"term_login": {"reason": "turn in progress: ✻"}}}))
+    fleet.RELOAD_FAILS["term_login"] = 1
+    for n in range(fleet.RELOAD_ALERT_TRIES + 2):
+        fleet.RELOAD_TRIED.clear()
+        assert fleet.retry_reloads(refuser) == [], n
+    assert refuser.calls == ["term_login"] * (fleet.RELOAD_ALERT_TRIES + 2), refuser.calls
+    assert fleet.RELOAD_FAILS["term_login"] == 1, fleet.RELOAD_FAILS
+    assert not items(f.tick(force=True), "reload_pending"), type(refuser)
+    fleet.RELOAD_TRIED.clear()
+    assert fleet.retry_reloads(fake) == ["term_login"] and "term_login" not in fleet.RELOAD_FAILS, fleet.RELOAD_FAILS
+pending_path.unlink()
+f.tick(force=True)
+sync_src = (pathlib.Path(fleet.__file__).resolve().parents[3] / "scripts" / "sync.py").read_text()
+assert all(r in sync_src for r in fleet.RELOAD_BUSY), "each busy reason is one sync.py still writes"
 
 # A push after approval, and CI recovering, become PR events for the platform side and new inbox state.
 world.advance()
