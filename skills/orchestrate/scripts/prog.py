@@ -2384,6 +2384,30 @@ def print_reviews(p):
         print("\n".join(lines), flush=True)
 
 
+GATE_SLICE_MS = 120000  # the dashboard rereads gates every 120 s (fleet.RUNS_EVERY)
+
+
+def gate_reads(p, events, prs, failed):
+    """PR -> its landing gate's resolution, None while pending. An unreadable gate reads as pending and prints one
+    line per wait (`failed` holds the PRs already named): it must never end or fail the wait."""
+    out = {}
+    for n in prs:
+        try:
+            out[n] = gate_resolution(p.cfg, events, n)
+        except (SystemExit, Exception) as e:
+            out[n] = None
+            if n not in failed:
+                failed.add(n)
+                print(f"GATE #{n} unreadable ({type(e).__name__}: {e}); the wait goes on", flush=True)
+    return out
+
+
+def print_gates(slug, resolved):
+    for n, res in resolved.items():
+        print(f"GATE #{n} resolved: {res}\n  orch land {slug} --pr {n}"
+              + ("" if res == "land" else f"  (closes its Land #{n} Task; the PR waits until you gate it again)"), flush=True)
+
+
 def cmd_wait(argv):
     p = Program(argv[0])
     timeout = opt(argv, "--timeout-ms", "540000")
@@ -2411,9 +2435,27 @@ def cmd_wait(argv):
         print(line, flush=True)
     if watched := watch_lines(me, False):
         print("\n".join(watched), flush=True)
+    # A gate the human resolves sends no Orca message, so the typed wait never wakes for it: read each open gate.
+    events, failed = p.events(), set()
+    gated = gate_reads(p, events, [n for n, st in pr_state(events).items() if "gate_opened" in st and "approved" not in st
+                                   and "landed" not in st] if p.cfg.get("merge_policy") == "human-gate" else [], failed)
+    # Resolved as land already: orch land records `approved`, which closes it. Any other resolution before the wait
+    # stays quiet, since nothing closes it and it would end every wait.
+    if done := {n: r for n, r in gated.items() if r == "land"}:
+        print_gates(p.slug, done)
+        return
+    gated = [n for n, r in gated.items() if r is None]
+    t = int(timeout) if gated else 0
+    slices = [str(min(GATE_SLICE_MS, t - s)) for s in range(0, t, GATE_SLICE_MS)] or [timeout]
     for i in range(rounds):
-        res = orca_json("orchestration", "check", *box, "--wait", "--types", ",".join(sorted(ACTIONABLE)),
-                        "--timeout-ms", timeout)
+        for ms in slices:
+            res = orca_json("orchestration", "check", *box, "--wait", "--types", ",".join(sorted(ACTIONABLE)),
+                            "--timeout-ms", ms)
+            if any(batch(res)):
+                break
+            if gated and (done := {n: r for n, r in gate_reads(p, events, gated, failed).items() if r}):
+                print_gates(p.slug, done)
+                return
         did, msgs = batch(res)
         # Orca's concise --json has no deliveryId, and the typed wait already took its batch: keep those messages.
         if not did and not msgs:
