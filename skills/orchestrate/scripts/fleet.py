@@ -1824,7 +1824,7 @@ class Fleet:
             for it in pr_items(det, self.me, cfg):
                 items.append({**it, "key": f"pr:{k}:{it['type']}", "session": sid, "at": det["updated"], "source": "github"})
         # Skill-side items and sync state.
-        terms = {t["handle"]: (s["id"], t["title"]) for s in sessions.values() for t in s["terminals"]}
+        terms = {t["handle"]: (s["id"], s["name"]) for s in sessions.values() for t in s["terminals"]}
         added, kept = external_items(), external_items(now)
         aged = [i for i in added if i not in kept]
         told = set(mem.get("external_aged") or ())
@@ -2028,6 +2028,10 @@ RELOAD_TRIED = {}  # handle -> monotonic time of the last retry
 RELOAD_FAILS = {}  # handle -> the dashboard's retries in a row the terminal refused, though idle
 RELOAD_ALERT_TRIES = 3  # config reload_alert_tries: refused this often, a reload needs a person. Until then it is
 # being retried (a busy terminal is not retried at all, and gets the reload once it is idle), not waiting on anyone
+# skills-sync's refusals (scripts/sync.py classify, send_to) that mean only "busy right now": retried, never counted.
+# Any other reason, an unknown one included, counts, so a screen sync.py does not recognize still reaches a person.
+RELOAD_BUSY = ("title shows the agent is busy", "turn in progress:", "the human is typing",
+               "Orca composer holds a draft", "screen changed between two reads", "dialog open:")
 
 # Needs you order, newest first within a rank: what only the owner can settle, then a merge call waiting on them, then
 # the rest; a PR item a held board item names is last, until the hold lifts.
@@ -2156,8 +2160,11 @@ def held_prs(store, shut, prs, now, cards=None, why=None):
 def retry_reloads(sync=None):
     """Send a reload skills-sync could not deliver again once its session is idle, through skills-sync's own
     broadcast (idle check, lock, reload-pending.json). skills-sync retries only every 15 minutes, and a coordinator
-    is rarely idle at that moment. Called after each collect; returns the handles reloaded."""
-    pending = read_json(state_dir().parent / "reload-pending.json")
+    is rarely idle at that moment. Called after each collect; returns the handles reloaded. A refusal counts toward
+    reload_alert_tries by the reason the file holds after the call; a lock refusal writes nothing, so the reason it
+    is judged by is the one recorded before."""
+    path = state_dir().parent / "reload-pending.json"
+    pending = read_json(path)
     failed = pending.get("failed") if isinstance(pending, dict) else None
     sync = failed and (sync or load_sync())
     if not sync or not hasattr(sync, "broadcast"):
@@ -2171,8 +2178,11 @@ def retry_reloads(sync=None):
             if sync.broadcast(None, False, only=h) == 0:
                 done.append(h)
                 RELOAD_FAILS.pop(h, None)
-            else:
-                RELOAD_FAILS[h] = RELOAD_FAILS.get(h, 0) + 1
+                continue
+        after = read_json(path)
+        reason = ((after.get("failed") or {}).get(h) or {}).get("reason") if isinstance(after, dict) else None
+        if not str(reason or "").startswith(RELOAD_BUSY):
+            RELOAD_FAILS[h] = RELOAD_FAILS.get(h, 0) + 1
     return done
 
 
