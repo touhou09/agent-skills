@@ -255,6 +255,20 @@ for said in ("{h}  not a connected, writable Claude terminal", "cannot list Orca
     fleet.write_atomic(pending_path, json.dumps({"since": "t4", "failed": {"term_login": {"reason": busy}}}))
     fleet.RELOAD_TRIED.clear()
     assert fleet.retry_reloads(Printing(said)) == [] and fleet.RELOAD_FAILS.pop("term_login") == 1, said
+# A printed reason a person must act on becomes the item after reload_alert_tries refusals, titled with the session;
+# busy refusals in between (human, busy, human, ...) neither count nor reset the count.
+for why in ("prompt box not recognized", "sent, but the screen does not show it was taken"):
+    fleet.write_atomic(pending_path, json.dumps({"since": "t5", "failed": {"term_login": {"reason": busy}}}))
+    human, between = Printing("{h}  " + why, why), Printing("{h}  " + busy, busy)
+    for n in range(fleet.RELOAD_ALERT_TRIES):
+        assert not items(f.tick(force=True), "reload_pending"), (why, n)
+        for refuser in ((between,) if n else ()) + (human,):
+            fleet.RELOAD_TRIED.clear()
+            assert fleet.retry_reloads(refuser) == []
+    assert len(human.calls) == fleet.RELOAD_ALERT_TRIES and len(between.calls) == fleet.RELOAD_ALERT_TRIES - 1
+    assert [(i["session"], i["terminal"], i["title"], i["detail"]) for i in items(f.tick(force=True), "reload_pending")] == [
+        ("wt-login", "term_login", "Reload not sent: ACME-101 login flow", why)], items(f.tick(force=True), "reload_pending")
+    fleet.RELOAD_FAILS.pop("term_login")
 pending_path.unlink()
 f.tick(force=True)
 sync_src = (pathlib.Path(fleet.__file__).resolve().parents[3] / "scripts" / "sync.py").read_text()
