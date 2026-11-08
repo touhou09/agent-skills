@@ -2025,13 +2025,14 @@ def watcher_items(sessions, now, last_scan=None):
 
 RELOAD_RETRY_S = 120
 RELOAD_TRIED = {}  # handle -> monotonic time of the last retry
-RELOAD_FAILS = {}  # handle -> the dashboard's retries in a row refused for a reason not in RELOAD_BUSY
+RELOAD_FAILS = {}  # handle -> the dashboard's retries in a row refused for a reason that counts (not busy, not lock)
 RELOAD_ALERT_TRIES = 3  # config reload_alert_tries: refused this often, a reload needs a person. Until then it is
 # being retried (a busy terminal is not retried at all, and gets the reload once it is idle), not waiting on anyone
 # skills-sync's refusals (scripts/sync.py classify, send_to) that mean only "busy right now": retried, never counted.
 # Any other reason, an unknown one included, counts, so a screen sync.py does not recognize still reaches a person.
 RELOAD_BUSY = ("title shows the agent is busy", "turn in progress:", "the human is typing",
                "Orca composer holds a draft", "screen changed between two reads", "dialog open:")
+RELOAD_LOCKED = "another sync or broadcast is running"  # sync.py broadcast, when it did not get the lock
 
 # Needs you order, newest first within a rank: what only the owner can settle, then a merge call waiting on them, then
 # the rest; a PR item a held board item names is last, until the hold lifts.
@@ -2161,9 +2162,9 @@ def retry_reloads(sync=None):
     """Send a reload skills-sync could not deliver again once its session is idle, through skills-sync's own
     broadcast (idle check, lock, reload-pending.json). skills-sync retries only every 15 minutes, and a coordinator
     is rarely idle at that moment. Called after each collect; returns the handles reloaded. A refusal is judged by
-    the reason the file holds after the call: a lock refusal writes nothing, so the one recorded before."""
-    path = state_dir().parent / "reload-pending.json"
-    pending = read_json(path)
+    what this call printed (`<handle>  <reason>`, or the whole output when it reached no terminal), not by the file:
+    a refusal that writes nothing (the lock, a terminal gone, Orca's list failing) leaves an older reason there."""
+    pending = read_json(state_dir().parent / "reload-pending.json")
     failed = pending.get("failed") if isinstance(pending, dict) else None
     sync = failed and (sync or load_sync())
     if not sync or not hasattr(sync, "broadcast"):
@@ -2173,14 +2174,16 @@ def retry_reloads(sync=None):
     mono, done = time.monotonic(), []
     for h in [h for h in failed if h in idle and mono - RELOAD_TRIED.get(h, -RELOAD_RETRY_S) >= RELOAD_RETRY_S]:
         RELOAD_TRIED[h] = mono
-        with contextlib.redirect_stdout(io.StringIO()):
-            if sync.broadcast(None, False, only=h) == 0:
-                done.append(h)
-                RELOAD_FAILS.pop(h, None)
-                continue
-        after = read_json(path)
-        reason = ((after.get("failed") or {}).get(h) or {}).get("reason") if isinstance(after, dict) else None
-        if not str(reason or "").startswith(RELOAD_BUSY):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = sync.broadcast(None, False, only=h)
+        if rc == 0:
+            done.append(h)
+            RELOAD_FAILS.pop(h, None)
+            continue
+        said = out.getvalue().strip()
+        reason = next((l[len(h) + 2:] for l in said.splitlines() if l.startswith(f"{h}  ")), said)
+        if not reason.startswith(RELOAD_BUSY + (RELOAD_LOCKED,)):
             RELOAD_FAILS[h] = RELOAD_FAILS.get(h, 0) + 1
     return done
 
