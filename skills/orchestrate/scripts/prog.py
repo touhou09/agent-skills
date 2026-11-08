@@ -2387,19 +2387,40 @@ def print_reviews(p):
 GATE_SLICE_MS = 120000  # the dashboard rereads gates every 120 s (fleet.RUNS_EVERY)
 
 
-def gate_reads(p, events, prs, failed):
-    """PR -> its landing gate's resolution, None while pending. An unreadable gate reads as pending and prints one
-    line per wait (`failed` holds the PRs already named): it must never end or fail the wait."""
-    out = {}
-    for n in prs:
+def gate_news(p, failed):
+    """({PR: resolution} for the open landing gates resolved and not yet reported, whether one is still pending).
+    Open: opened under human-gate, neither approved nor landed. Each gate is reported once (gates.json keeps the
+    ids): a held gate, or a land `orch land` refuses before recording `approved`, stays open and would end every
+    wait. An unreadable gate counts as pending and prints one line per wait (`failed`): it never ends the wait."""
+    if p.cfg.get("merge_policy") != "human-gate":
+        return {}, False
+    events = p.events()
+    gates = {n: st["gate_opened"].get("gate") for n, st in pr_state(events).items()
+             if "gate_opened" in st and "approved" not in st and "landed" not in st}
+    path = p.dir / "gates.json"
+    try:
+        told = set(json.loads(path.read_text()))
+    except (OSError, ValueError, TypeError):
+        told = set()
+    news, pending = {}, False
+    for n, gid in gates.items():
+        if gid in told:
+            continue
         try:
-            out[n] = gate_resolution(p.cfg, events, n)
+            res = gate_resolution(p.cfg, events, n)
         except (SystemExit, Exception) as e:
-            out[n] = None
+            res = None
             if n not in failed:
                 failed.add(n)
                 print(f"GATE #{n} unreadable ({type(e).__name__}: {e}); the wait goes on", flush=True)
-    return out
+        if res:
+            news[n] = res
+        else:
+            pending = True
+    if news:
+        with contextlib.suppress(OSError):
+            path.write_text(json.dumps(sorted(told | {gates[n] for n in news})))
+    return news, pending
 
 
 def print_gates(slug, resolved):
@@ -2435,25 +2456,22 @@ def cmd_wait(argv):
         print(line, flush=True)
     if watched := watch_lines(me, False):
         print("\n".join(watched), flush=True)
-    # A gate the human resolves sends no Orca message, so the typed wait never wakes for it: read each open gate.
-    events, failed = p.events(), set()
-    gated = gate_reads(p, events, [n for n, st in pr_state(events).items() if "gate_opened" in st and "approved" not in st
-                                   and "landed" not in st] if p.cfg.get("merge_policy") == "human-gate" else [], failed)
-    # Resolved as land already: orch land records `approved`, which closes it. Any other resolution before the wait
-    # stays quiet, since nothing closes it and it would end every wait.
-    if done := {n: r for n, r in gated.items() if r == "land"}:
+    # A gate the human resolves sends no Orca message, so the typed wait never wakes for it: read the open gates,
+    # between slices of at most 120 s while one is pending. A gate opened during the wait is sliced from the next round.
+    failed = set()
+    done, pending = gate_news(p, failed)
+    if done:
         print_gates(p.slug, done)
         return
-    gated = [n for n, r in gated.items() if r is None]
-    t = int(timeout) if gated else 0
-    slices = [str(min(GATE_SLICE_MS, t - s)) for s in range(0, t, GATE_SLICE_MS)] or [timeout]
     for i in range(rounds):
-        for ms in slices:
+        t = int(timeout) if pending else 0
+        for ms in [str(min(GATE_SLICE_MS, t - s)) for s in range(0, t, GATE_SLICE_MS)] or [timeout]:
             res = orca_json("orchestration", "check", *box, "--wait", "--types", ",".join(sorted(ACTIONABLE)),
                             "--timeout-ms", ms)
             if any(batch(res)):
                 break
-            if gated and (done := {n: r for n, r in gate_reads(p, events, gated, failed).items() if r}):
+            done, pending = gate_news(p, failed)
+            if done:
                 print_gates(p.slug, done)
                 return
         did, msgs = batch(res)

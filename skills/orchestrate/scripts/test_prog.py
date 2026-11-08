@@ -593,15 +593,18 @@ for cfg, me, box in (({"run": "run_top", "repo": "o/r"}, "term_coord", ("--run",
         checks = [a for a in calls if a[:2] == ("orchestration", "check")]
         assert checks and all(a[2:4] == box for a in checks), (box, checks)
 # A human resolving a landing gate (dashboard, Orca app or CLI) sends no Orca message. Under human-gate, orch wait
-# reads each gate pending at its start between check --wait calls of at most 120 s, and ends on its resolution.
+# reads each open gate between check --wait calls of at most 120 s, and ends on its resolution, once per gate.
 import threading, types
 import fleet
-prog.Program = lambda slug: type("P", (), {"cfg": {"run": "run_top", "repo": "o/r", "merge_policy": "human-gate"}, "slug": slug,
-                                           "events": lambda self: [{"ev": "gate_opened", "pr": 7, "task": "t7", "gate": "g1"}],
-                                           "dir": _pdir})()
-def gate_wait_case(start=None, click=None, broken=False):
+OPENED = {"ev": "gate_opened", "pr": 7, "task": "t7", "gate": "g1"}
+def gate_wait_case(start=None, click=None, broken=False, late=False, d=None):
     """cmd_wait on one fake Orca that fleet.orca and prog.orca_json share. `start` is the gate's resolution before
-    the wait; `click` is the option the dashboard resolves it with during the second check --wait."""
+    the wait; `click` is the option the dashboard resolves it with during the second check --wait; `late` opens the
+    gate during the first. `d` is the program directory, which keeps the gates already reported."""
+    d = d or pathlib.Path(tempfile.mkdtemp())
+    events = [] if late else [OPENED]
+    prog.Program = lambda slug: type("P", (), {"cfg": {"run": "run_top", "repo": "o/r", "merge_policy": "human-gate"},
+                                               "slug": slug, "events": lambda self: list(events), "dir": d})()
     gates = [{"id": "g1", "run_id": "run_top", "taskId": "t7", "status": "resolved" if start else "pending",
               "resolution": start, "options": '["land","hold"]'}]
     f = types.SimpleNamespace(runs={"runs": [{"id": "run_top", "coordinator_handle": "term_coord"}],
@@ -618,6 +621,8 @@ def gate_wait_case(start=None, click=None, broken=False):
             return {"gates": [dict(g) for g in gates]}
         if a[:2] == ("orchestration", "check") and "--wait" in a:
             waits.append(a)
+            if late and len(waits) == 1:
+                events.append(OPENED)
             if click and len(waits) == 2:
                 assert fleet.gate_resolve(f, "g1", click)[0] == 200
                 clicked.append(len(waits))
@@ -637,11 +642,17 @@ for click in ("land", "hold"):
 # A gate nobody resolves: the wait keeps its rounds × --timeout-ms, in slices.
 got, waits, _ = gate_wait_case()
 assert "EMPTY x3" in got and "GATE" not in got and sum(ms(waits)) == 3 * 540000 and max(ms(waits)) <= 120000, (got, ms(waits))
-# Resolved as land before the wait: it ends at once. Held before it: not reported again, or every wait would end at once.
-got, waits, _ = gate_wait_case(start="land")
-assert "GATE #7 resolved: land" in got and "  orch land s --pr 7" in got and not waits, (got, waits)
-got, waits, _ = gate_wait_case(start="hold")
-assert "EMPTY x3" in got and "GATE" not in got and ms(waits) == [540000] * 3, (got, ms(waits))
+# Resolved between two waits: the next wait reports it at once, and the one after it does not, so a gate that stays
+# open (held, or land refused under a STOP line) never keeps the inbox unread.
+for start in ("land", "hold"):
+    d = pathlib.Path(tempfile.mkdtemp())
+    got, waits, _ = gate_wait_case(start=start, d=d)
+    assert f"GATE #7 resolved: {start}" in got and "  orch land s --pr 7" in got and not waits, (got, waits)
+    got, waits, _ = gate_wait_case(start=start, d=d)
+    assert "EMPTY x3" in got and "GATE" not in got and ms(waits) == [540000] * 3, (got, ms(waits))
+# A gate opened during the wait is read from the next round on.
+got, waits, _ = gate_wait_case(late=True, click="land")
+assert "GATE #7 resolved: land" in got and ms(waits) == [540000, 120000], (got, ms(waits))
 # An unreadable gate is one line, never the wait's end or failure.
 got, waits, _ = gate_wait_case(broken=True)
 assert "EMPTY x3" in got and got.count("GATE #7 unreadable") == 1 and sum(ms(waits)) == 3 * 540000, got
