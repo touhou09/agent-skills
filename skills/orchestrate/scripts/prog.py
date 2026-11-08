@@ -866,6 +866,8 @@ def visual_local(slug):
 
 
 def shot_files(d):
+    if not d:  # Path("") is the working directory
+        return []
     try:
         return sorted(f.name for f in pathlib.Path(d).iterdir() if f.suffix.lower() in IMAGE_EXT and f.is_file())
     except OSError:
@@ -1512,8 +1514,11 @@ def cmd_visual(argv):
     head = pr_view(p.cfg["repo"], pr)["headRefOid"]
     if not head.startswith(sha):
         sys.exit(f"head is {head[:8]}, not the judged {sha[:8]}: judge the screen at the new head")
-    row = p.append("visual", pr=pr, sha=head, patch_id=patch_id(p.cfg["repo"], pr), shots=str(d),
-                   result=result, note=opt(argv, "--note"))
+    pid = patch_id(p.cfg["repo"], pr)
+    # The diff is read after the head: a push in between would pin this judgement to a patch nobody looked at.
+    if (now_head := pr_view(p.cfg["repo"], pr)["headRefOid"]) != head:
+        sys.exit(f"head moved {head[:8]} -> {now_head[:8]} while recording: judge the screen at the new head")
+    row = p.append("visual", pr=pr, sha=head, patch_id=pid, shots=str(d), result=result, note=opt(argv, "--note"))
     print(json.dumps(row, ensure_ascii=False))
 
 
