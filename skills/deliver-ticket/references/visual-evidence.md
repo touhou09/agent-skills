@@ -89,7 +89,9 @@ load after the sticky is up, not before. The comment then reads:
 ```
 
 In a program that skips the upload (above), the comment carries the verdict line without the
-`### 스크린샷` section; the images stay in the local evidence directory.
+`### 스크린샷` section; the images stay in the local evidence directory. Its `orch visual` row is
+pinned to the patch-id, so any commit that changes the patch needs the row recorded again, with the
+same shots when the rendered output did not change.
 
 The verdict holds for the head it was judged on. A commit that changes the rendered output needs new
 shots and a new verdict; one that does not (a test, a comment) keeps them, and the verdict line says
