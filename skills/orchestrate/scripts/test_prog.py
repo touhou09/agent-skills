@@ -592,6 +592,60 @@ for cfg, me, box in (({"run": "run_top", "repo": "o/r"}, "term_coord", ("--run",
         assert "--ack None" not in got, got
         checks = [a for a in calls if a[:2] == ("orchestration", "check")]
         assert checks and all(a[2:4] == box for a in checks), (box, checks)
+# A human resolving a landing gate (dashboard, Orca app or CLI) sends no Orca message. Under human-gate, orch wait
+# reads each gate pending at its start between check --wait calls of at most 120 s, and ends on its resolution.
+import threading, types
+import fleet
+prog.Program = lambda slug: type("P", (), {"cfg": {"run": "run_top", "repo": "o/r", "merge_policy": "human-gate"}, "slug": slug,
+                                           "events": lambda self: [{"ev": "gate_opened", "pr": 7, "task": "t7", "gate": "g1"}],
+                                           "dir": _pdir})()
+def gate_wait_case(start=None, click=None, broken=False):
+    """cmd_wait on one fake Orca that fleet.orca and prog.orca_json share. `start` is the gate's resolution before
+    the wait; `click` is the option the dashboard resolves it with during the second check --wait."""
+    gates = [{"id": "g1", "run_id": "run_top", "taskId": "t7", "status": "resolved" if start else "pending",
+              "resolution": start, "options": '["land","hold"]'}]
+    f = types.SimpleNamespace(runs={"runs": [{"id": "run_top", "coordinator_handle": "term_coord"}],
+                                    "gates": [dict(g) for g in gates]}, lock=threading.Lock())
+    waits, clicked = [], []
+    def orca(*a, **k):
+        if a[:2] == ("orchestration", "gate-resolve"):
+            gates[0].update(status="resolved", resolution=a[a.index("--resolution") + 1])
+            return {"id": "g1", "status": "resolved"}
+        if a[:2] == ("orchestration", "gate-list"):
+            if broken:
+                raise SystemExit("orca orchestration gate-list: down")
+            assert "--full" in a and a[a.index("--task") + 1] == "t7", a
+            return {"gates": [dict(g) for g in gates]}
+        if a[:2] == ("orchestration", "check") and "--wait" in a:
+            waits.append(a)
+            if click and len(waits) == 2:
+                assert fleet.gate_resolve(f, "g1", click)[0] == 200
+                clicked.append(len(waits))
+        return {"messages": []} if a[:2] == ("orchestration", "check") else {}
+    fleet.orca, prog.orca_json = orca, orca
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        prog.cmd_wait(["s"])
+    return out.getvalue(), waits, clicked
+saved_fleet_orca = fleet.orca
+ms = lambda waits: [int(a[a.index("--timeout-ms") + 1]) for a in waits]
+for click in ("land", "hold"):
+    got, waits, clicked = gate_wait_case(click=click)
+    assert f"GATE #7 resolved: {click}" in got and "  orch land s --pr 7" in got and "EMPTY" not in got, got
+    assert len(waits) - clicked[0] <= 1, (len(waits), clicked)
+    assert ms(waits) and max(ms(waits)) <= 120000, ms(waits)
+# A gate nobody resolves: the wait keeps its rounds × --timeout-ms, in slices.
+got, waits, _ = gate_wait_case()
+assert "EMPTY x3" in got and "GATE" not in got and sum(ms(waits)) == 3 * 540000 and max(ms(waits)) <= 120000, (got, ms(waits))
+# Resolved as land before the wait: it ends at once. Held before it: not reported again, or every wait would end at once.
+got, waits, _ = gate_wait_case(start="land")
+assert "GATE #7 resolved: land" in got and "  orch land s --pr 7" in got and not waits, (got, waits)
+got, waits, _ = gate_wait_case(start="hold")
+assert "EMPTY x3" in got and "GATE" not in got and ms(waits) == [540000] * 3, (got, ms(waits))
+# An unreadable gate is one line, never the wait's end or failure.
+got, waits, _ = gate_wait_case(broken=True)
+assert "EMPTY x3" in got and got.count("GATE #7 unreadable") == 1 and sum(ms(waits)) == 3 * 540000, got
+fleet.orca = saved_fleet_orca
 if saved_me is None:
     del prog.os.environ["ORCA_TERMINAL_HANDLE"]
 else:
