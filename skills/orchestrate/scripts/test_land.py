@@ -600,6 +600,14 @@ prog(env, "visual", "t", "--pr", "40", "--sha", "h40", "--shots", str(d / "shots
 (d / "shots" / "members-1440-light.png").unlink()
 code, out = prog(env, "land", "t", "--pr", "40")
 assert code == 3 and "no image" in out, out
+# A row with an empty shots path (only a hand-edited ledger has one) is no image, not the working directory's.
+d, env = local(40)
+with (d / "programs" / "t" / "ledger.jsonl").open("a") as f:
+    f.write(json.dumps({"ts": "2026-09-24T00:00:00+00:00", "ev": "visual", "pr": 40, "sha": "h40",
+                        "patch_id": pid(40), "shots": "", "result": "pass"}) + "\n")
+r = subprocess.run([sys.executable, HERE / "prog.py", "land", "t", "--pr", "40"], env=env, cwd=d / "shots",
+                   capture_output=True, text=True)
+assert r.returncode == 3 and "no image" in r.stdout + r.stderr, r.stdout + r.stderr
 # Not listed: another slug, a malformed or unreadable file, or the key in program.json keeps the image rule.
 for config in (["other"], "t", {"t": True}, "{not json"):
     d, env = local(40, config if config != "t" else json.dumps({"orchestrate": {"visual_evidence_local": "t"}}))
