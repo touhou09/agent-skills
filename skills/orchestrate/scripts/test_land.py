@@ -38,6 +38,8 @@ elif a[:2] == ["pr", "view"]:
                                         url=f"https://x/pull/{a[2]}", title="t", headRefName=f"b{a[2]}")))
 elif a[:2] == ["pr", "diff"]:
     print(pr(a[2])["diff"])
+    if pr(a[2]).get("push_on_diff"):  # a commit lands while the caller reads the diff
+        pr(a[2])["headRefOid"] = pr(a[2]).pop("push_on_diff"); save()
 elif a[:2] == ["pr", "merge"]:
     p = pr(a[2])
     if p.get("stacked"):
@@ -573,6 +575,9 @@ assert code == 1 and "not the judged" in out, out
 (d / "empty").mkdir()
 code, out = prog(env, "visual", "t", "--pr", "40", "--sha", "h40", "--shots", str(d / "empty"))
 assert code == 1 and "no image" in out, out
+st = json.loads((d / "state.json").read_text()); st["prs"]["40"]["push_on_diff"] = "h40b"; (d / "state.json").write_text(json.dumps(st))
+code, out = prog(env, "visual", "t", "--pr", "40", "--sha", "h40", "--shots", str(d / "shots"))
+assert code == 1 and "moved" in out, out
 assert "visual" not in [e["ev"] for e in ledger(d)]
 # Listed, and still refused: no judgement, a failed one, a patch changed after it, the images gone.
 d, env = local(40)
