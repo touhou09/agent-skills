@@ -20,6 +20,11 @@ Usage: orch <command> <slug> [options]
                                      caused, a skill or script defect. PTR points at the proof (message
                                      id, PR comment URL, transcript path:line); nothing is copied in
   verdict <slug> --pr N --sha REVIEWED_HEAD --source WHO [--result pass|fail] [--note TEXT]
+  visual <slug> --pr N --sha JUDGED_HEAD --shots DIR [--result pass|fail] [--note TEXT]
+                                     the lead's judgement of local screenshots (DIR holds at least one
+                                     image), pinned to the head and patch-id; land reads it in place of
+                                     an image in the comment only for a program the human listed in
+                                     agent-skills.json orchestrate.visual_evidence_local
   gate <slug> --pr N [--parent TASK_ID]
                                      human-gate: open an Orca decision gate "land PR N?" on a
                                      lead-owned landing Task; the user resolves it in Orca
@@ -40,7 +45,9 @@ Usage: orch <command> <slug> [options]
                                      CI, Dockerfile, compose, exclusive_paths, gates): one PR per
                                      base at a time, on the latest base, in land order. A PR
                                      touching visual_paths needs an image in its test-results
-                                     comment (or a person's no-visual-change label), and every
+                                     comment (or a person's no-visual-change label, or, in a program
+                                     listed in agent-skills.json orchestrate.visual_evidence_local, a
+                                     passing `visual` at the current patch-id), and every
                                      failed CI run of its branch a line there naming the run id
                                      and what resolved it. Exit 0
                                      landed, 2 yield (nothing to do yet), 3 act (fix, update or
@@ -177,7 +184,7 @@ Usage: orch <command> <slug> [options]
                                      and the exclusive landing lanes
 
 Store: ~/.claude/programs/<slug>/ (program.json holds identifiers only; ledger.jsonl is
-append-only). Events: spawned, ready, verdict, landed, main_green, main_red, land_failed,
+append-only). Events: spawned, ready, verdict, visual, landed, main_green, main_red, land_failed,
 admitted, parked, approved, gate_opened, stop, resume, predicate_verified, config, dep,
 land_check, yield, lane, lock_acquired, lock_released, reprioritized, signal.
 Tickets come from the tracker adapter (use-tracker/scripts/tracker.py), never from a tracker directly.
@@ -186,6 +193,8 @@ import contextlib, datetime as dt, fcntl, fnmatch, hashlib, heapq, json, os, pat
 
 TRACKER = pathlib.Path(__file__).resolve().parents[2] / "use-tracker" / "scripts" / "tracker.py"
 HOME = pathlib.Path(os.environ.get("PROGRAMS_HOME", "~/.claude/programs")).expanduser()
+# Read only: the human changes it through the script skills-config emits, never an orch command.
+SKILLS_CONFIG = pathlib.Path(os.environ.get("AGENT_SKILLS_CONFIG") or "~/.claude/agent-skills.json").expanduser()
 GIT_CACHE = pathlib.Path(os.environ.get("XDG_CACHE_HOME", "~/.cache")).expanduser() / "agent-skills" / "orchestrate" / "git"
 PASSING = {"SUCCESS", "SKIPPED", "NEUTRAL"}
 ACTIONABLE = {"worker_done", "escalation", "question"}
@@ -843,10 +852,52 @@ def explained(body, run_id):
     return False
 
 
-def evidence_problems(cfg, repo, pr):
+IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+
+
+def visual_local(slug):
+    """The human listed this program in agent-skills.json orchestrate.visual_evidence_local. A missing, unreadable
+    or malformed file is off: no failure turns the exemption on."""
+    try:
+        slugs = json.loads(SKILLS_CONFIG.read_text())["orchestrate"]["visual_evidence_local"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return isinstance(slugs, list) and slug in slugs
+
+
+def shot_files(d):
+    try:
+        return sorted(f.name for f in pathlib.Path(d).iterdir() if f.suffix.lower() in IMAGE_EXT and f.is_file())
+    except OSError:
+        return []
+
+
+def local_visual_problems(p, events, pr, visual):
+    """(problems, notes) for a listed program: the lead's passing `visual` judgement at the current patch-id,
+    pointing at a directory that still holds an image."""
+    ev = pr_state(events).get(pr, {}).get("visual")
+    what = f"#{pr} changes the screen ({', '.join(visual[:3])})"
+    if not ev:
+        return [f"{what} and the program takes local screenshots (agent-skills.json): judge them, then"
+                f" orch visual {p.slug} --pr {pr} --sha <head> --shots <dir>"], []
+    if ev.get("result") != "pass":
+        return [f"{what} and the lead's visual judgement at {ev.get('sha', '')[:8]} is {ev.get('result')}"], []
+    cur = patch_id(p.cfg["repo"], pr)
+    if cur != ev.get("patch_id"):
+        return [f"{what}: patch changed since the visual judgement ({(ev.get('patch_id') or '')[:10]} -> {cur[:10]}):"
+                f" judge the screen again, then orch visual"], []
+    if not shot_files(ev.get("shots") or ""):
+        return [f"{what} and its visual judgement points at {ev.get('shots')}, which holds no image"], []
+    return [], [f"{what}: visual evidence: local (agent-skills.json: {SKILLS_CONFIG}), judged at"
+                f" {ev.get('sha', '')[:8]}, shots {ev.get('shots')}"]
+
+
+def evidence_problems(p, events, pr):
     """(problems, notes) from the PR's sticky test-results comment. The brief's rule alone once let a screen
     change land with no screenshot, so land checks it: an image for a visual change unless a person labelled
-    the PR no-visual-change, and each failed CI run of the branch named with what resolved it."""
+    the PR no-visual-change or listed the program for local judgement, and each failed CI run of the branch
+    named with what resolved it."""
+    cfg, repo = p.cfg, p.cfg["repo"]
     v = gh_json("pr", "view", str(pr), "--repo", repo, "--json", "headRefName,labels,comments")
     # The first marker comment, the one sticky-comment.sh keeps updating.
     body = next((c.get("body") or "" for c in v.get("comments") or [] if TEST_RESULTS in (c.get("body") or "")), "")
@@ -857,6 +908,8 @@ def evidence_problems(cfg, repo, pr):
     visual = [f for f in files if f and any(fnmatch.fnmatch(f, g) for g in pats)]
     if visual and NO_VISUAL in {l.get("name") for l in v.get("labels") or []}:
         notes.append(f"#{pr} changes the screen ({', '.join(visual[:3])}) and is exempt from screenshots by label {NO_VISUAL}")
+    elif visual and visual_local(p.slug):
+        problems, notes = local_visual_problems(p, events, pr, visual)
     elif visual and not rendered_images(body):
         problems.append(f"#{pr} changes the screen ({', '.join(visual[:3])}) but its {TEST_RESULTS} comment"
                         f" {'renders no image' if body else 'does not exist'}: upload the screenshots into it"
@@ -1373,7 +1426,7 @@ def next_move(cfg, events, tnow, *, tickets_done, live, human, order, leftover=0
 
 OWNED = {"approved": "land, gate", "gate_opened": "gate", "landed": "land, landed", "land_check": "land",
          "land_failed": "land", "ready": "land-check", "lane": "land", "yield": "land",
-         "lock_acquired": "land", "lock_released": "land", "dep": "dep", "config": "set"}
+         "lock_acquired": "land", "lock_released": "land", "dep": "dep", "config": "set", "visual": "visual"}
 
 
 # land_failed, main_red and failed verdicts are already in the ledger; a signal records what only the lead sees.
@@ -1409,6 +1462,9 @@ def cmd_set(argv):
     key, value = argv[1], argv[2]
     if key == "merge_policy" and value not in ("autonomous", "human-gate"):
         sys.exit("merge_policy is autonomous or human-gate")
+    if key.startswith("visual_evidence"):
+        sys.exit("visual evidence is the human's switch, orchestrate.visual_evidence_local in agent-skills.json:"
+                 " the human runs the script skills-config emits; no orch command changes it")
     split = lambda v: [x for x in v.split(",") if x]
     conv = {"ceiling": int, "predicate": split, "exclusive_paths": split, "visual_paths": split}.get(key, str)
     if key not in ("merge_policy", "ceiling", "deadline", "predicate", "exclusive_paths", "visual_paths", "note", "final_check"):
@@ -1440,6 +1496,24 @@ def cmd_verdict(argv):
         sys.exit(f"head is {head[:8]}, not the reviewed {sha[:8]}: the new head has not been reviewed")
     row = p.append("verdict", pr=pr, sha=head, patch_id=patch_id(p.cfg["repo"], pr),
                    source=src, result=opt(argv, "--result", "pass"), note=opt(argv, "--note"))
+    print(json.dumps(row, ensure_ascii=False))
+
+
+def cmd_visual(argv):
+    p = Program(argv[0])
+    pr, sha, shots = int(opt(argv, "--pr")), opt(argv, "--sha"), opt(argv, "--shots")
+    result = opt(argv, "--result", "pass")
+    if not sha or not shots or result not in ("pass", "fail"):
+        sys.exit("visual needs --sha (the head whose screen was judged), --shots (the evidence directory)"
+                 " and --result pass|fail")
+    d = pathlib.Path(shots).expanduser().resolve()
+    if not shot_files(d):
+        sys.exit(f"{d} holds no image (.png, .jpg, .webp, .gif): take the shots first (deliver-ticket visual-evidence)")
+    head = pr_view(p.cfg["repo"], pr)["headRefOid"]
+    if not head.startswith(sha):
+        sys.exit(f"head is {head[:8]}, not the judged {sha[:8]}: judge the screen at the new head")
+    row = p.append("visual", pr=pr, sha=head, patch_id=patch_id(p.cfg["repo"], pr), shots=str(d),
+                   result=result, note=opt(argv, "--note"))
     print(json.dumps(row, ensure_ascii=False))
 
 
@@ -1689,7 +1763,7 @@ def attempt(p, pr, klass, onto_lower=False):
     unit = (me["stack"] or [pr])[: (me["stack"] or [pr]).index(pr) + 1]
     missing = []
     for n in unit:
-        problems, notes = evidence_problems(cfg, repo, n)
+        problems, notes = evidence_problems(p, events, n)
         missing += problems
         for line in notes:
             print(line, flush=True)
@@ -1818,7 +1892,7 @@ def cmd_land_check(argv):
         problems.append("CI failed: " + ", ".join(failed))
     if pending:
         problems.append("CI pending: " + ", ".join(pending[:5]))
-    missing, notes = evidence_problems(p.cfg, repo, pr)
+    missing, notes = evidence_problems(p, events, pr)
     problems += missing
     for line in notes:
         print(f"note: {line}")
@@ -3022,7 +3096,7 @@ def cmd_sent(argv):
         sys.exit(f"{e}\n{usage}")
 
 
-COMMANDS = {"init": cmd_init, "set": cmd_set, "status": cmd_status, "record": cmd_record, "verdict": cmd_verdict,
+COMMANDS = {"init": cmd_init, "set": cmd_set, "status": cmd_status, "record": cmd_record, "verdict": cmd_verdict, "visual": cmd_visual,
             "gate": cmd_gate, "dep": cmd_dep, "queue": cmd_queue, "overlap": cmd_overlap, "land": cmd_land, "land-check": cmd_land_check,
             "landed": cmd_landed, "heavy": cmd_heavy, "wait": cmd_wait, "inbox": cmd_inbox, "backfill": cmd_backfill, "decide": cmd_decide,
             "stage": cmd_stage, "board": cmd_board, "brief": cmd_brief, "hold": cmd_hold, "sent": cmd_sent, "release": lambda argv: cmd_hold(argv, release=True),
