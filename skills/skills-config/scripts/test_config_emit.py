@@ -128,6 +128,12 @@ class AgentSkillsKeysTest(Base):
                                                    "reap.pressure.swap_gb": [4, 8]}}})
         self.assertEqual(r.returncode, 0, r.stderr)
 
+    def test_orchestrate_visual_evidence_local_is_a_documented_key(self):
+        r, _ = self.emit({"agent_skills": {"set": {"orchestrate.visual_evidence_local": ["acme-web"]}}})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("Refused", r.stdout + r.stderr)
+        self.assertIn('"visual_evidence_local": [', r.stdout)
+
     def test_secret_value_and_key_refused(self):
         r, _ = self.emit({"agent_skills": {"set": {"prs.channel": "xox" + "b-123-456"}}})
         self.assertIn("looks like a secret", r.stderr)
