@@ -2502,6 +2502,10 @@ def cmd_wait(argv):
         if did:
             orca_json("orchestration", "check", *box, "--ack", did)
         print(f"wait {i + 1}/{rounds}: nothing actionable ({len(msgs)} heartbeat(s) or refusals acked)", flush=True)
+        done, pending = gate_news(p, failed)  # an ignored batch ended the slices before their gate read
+        if done:
+            print_gates(p.slug, done)
+            return
         if print_stuck(p, run_id, only_new=True):
             print_sweep(run_id, p.dir / "self-check.json")
             print("STUCK: a worker waits on a prompt nobody sees; answer or escalate it now", flush=True)

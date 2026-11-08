@@ -597,10 +597,11 @@ for cfg, me, box in (({"run": "run_top", "repo": "o/r"}, "term_coord", ("--run",
 import threading, types
 import fleet
 OPENED = {"ev": "gate_opened", "pr": 7, "task": "t7", "gate": "g1"}
-def gate_wait_case(start=None, click=None, broken=False, late=False, d=None):
+def gate_wait_case(start=None, click=None, broken=False, late=False, d=None, echo=False):
     """cmd_wait on one fake Orca that fleet.orca and prog.orca_json share. `start` is the gate's resolution before
     the wait; `click` is the option the dashboard resolves it with during the second check --wait; `late` opens the
-    gate during the first. `d` is the program directory, which keeps the gates already reported."""
+    gate during the first; `echo` has every check --wait return a released worker's refused worker_done. `d` is the
+    program directory, which keeps the gates already reported."""
     d = d or pathlib.Path(tempfile.mkdtemp())
     events = [] if late else [OPENED]
     prog.Program = lambda slug: type("P", (), {"cfg": {"run": "run_top", "repo": "o/r", "merge_policy": "human-gate"},
@@ -626,6 +627,8 @@ def gate_wait_case(start=None, click=None, broken=False, late=False, d=None):
             if click and len(waits) == 2:
                 assert fleet.gate_resolve(f, "g1", click)[0] == 200
                 clicked.append(len(waits))
+            if echo:
+                return {"deliveryId": f"dv{len(waits)}", "messages": [{"type": "worker_done", "payload": rej("Dispatch d1 capability is revoked.")}]}
         return {"messages": []} if a[:2] == ("orchestration", "check") else {}
     fleet.orca, prog.orca_json = orca, orca
     out = io.StringIO()
@@ -653,6 +656,9 @@ for start in ("land", "hold"):
 # A gate opened during the wait is read from the next round on.
 got, waits, _ = gate_wait_case(late=True, click="land")
 assert "GATE #7 resolved: land" in got and ms(waits) == [540000, 120000], (got, ms(waits))
+# A batch the wait acks and ignores (a released worker's refused worker_done) does not skip the gate read.
+got, waits, clicked = gate_wait_case(click="land", echo=True)
+assert "GATE #7 resolved: land" in got and len(waits) == clicked[0] == 2, (got, ms(waits))
 # An unreadable gate is one line, never the wait's end or failure.
 got, waits, _ = gate_wait_case(broken=True)
 assert "EMPTY x3" in got and got.count("GATE #7 unreadable") == 1 and sum(ms(waits)) == 3 * 540000, got
