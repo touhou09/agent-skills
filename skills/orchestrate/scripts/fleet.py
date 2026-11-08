@@ -2025,7 +2025,7 @@ def watcher_items(sessions, now, last_scan=None):
 
 RELOAD_RETRY_S = 120
 RELOAD_TRIED = {}  # handle -> monotonic time of the last retry
-RELOAD_FAILS = {}  # handle -> the dashboard's retries in a row the terminal refused, though idle
+RELOAD_FAILS = {}  # handle -> the dashboard's retries in a row refused for a reason not in RELOAD_BUSY
 RELOAD_ALERT_TRIES = 3  # config reload_alert_tries: refused this often, a reload needs a person. Until then it is
 # being retried (a busy terminal is not retried at all, and gets the reload once it is idle), not waiting on anyone
 # skills-sync's refusals (scripts/sync.py classify, send_to) that mean only "busy right now": retried, never counted.
@@ -2160,9 +2160,8 @@ def held_prs(store, shut, prs, now, cards=None, why=None):
 def retry_reloads(sync=None):
     """Send a reload skills-sync could not deliver again once its session is idle, through skills-sync's own
     broadcast (idle check, lock, reload-pending.json). skills-sync retries only every 15 minutes, and a coordinator
-    is rarely idle at that moment. Called after each collect; returns the handles reloaded. A refusal counts toward
-    reload_alert_tries by the reason the file holds after the call; a lock refusal writes nothing, so the reason it
-    is judged by is the one recorded before."""
+    is rarely idle at that moment. Called after each collect; returns the handles reloaded. A refusal is judged by
+    the reason the file holds after the call: a lock refusal writes nothing, so the one recorded before."""
     path = state_dir().parent / "reload-pending.json"
     pending = read_json(path)
     failed = pending.get("failed") if isinstance(pending, dict) else None
