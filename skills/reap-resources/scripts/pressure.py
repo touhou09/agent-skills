@@ -216,7 +216,9 @@ def active_turns(run=sh):
         return None
     # ponytail: the card's last output, not the pane's (one Orca call in a hook); a shell printing in the same card
     # keeps a stale agent counted, which errs toward waiting. Match panes via `orca terminal list` if that bites.
-    return sum(isinstance(a, dict) and sync.agent_phase(a.get("state"), w.get("lastOutputAt")) == "working"
+    # An agent with no terminal of its own (a chat session) prints nowhere, so the card's time says nothing about it.
+    return sum(isinstance(a, dict) and sync.agent_phase(
+        a.get("state"), w.get("lastOutputAt") if a.get("hasLivePty") else None) == "working"
                for w in trees if isinstance(w, dict) for a in w.get("agents") or [])
 
 
