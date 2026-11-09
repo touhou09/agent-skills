@@ -141,7 +141,7 @@ With no guardian running, whoever is about to record `main_red` does its read fi
 
 ## human-gate
 
-Workers stop at READY. `land` refuses them with exit 1, and they report. You open the gate with `orch gate <slug> --pr N`, which creates an Orca decision gate on a lead-owned Task. The user resolves it in Orca. You then run `orch land <slug> --pr N`: it sees the resolution, records `approved`, and lands. No worker settles that `Land #N` Task, so `land` closes it: completed when the PR lands, failed when the user resolved the gate as hold or the PR was closed. Gating the PR again makes a new Task.
+Workers stop at READY. `land` refuses them with exit 1, and they report. You open the gate with `orch gate <slug> --pr N`, which creates an Orca decision gate on a lead-owned Task. The user resolves it in Orca or on the dashboard. That sends no Orca message, so `orch wait` reads each pending gate every 120 s and ends with `GATE #N resolved: <resolution>` and the `orch land` line, once per gate. You then run `orch land <slug> --pr N`: it sees the resolution, records `approved`, and lands. No worker settles that `Land #N` Task, so `land` closes it: completed when the PR lands, failed when the user resolved the gate as hold or the PR was closed. Gating the PR again makes a new Task.
 
 ## Permissions
 

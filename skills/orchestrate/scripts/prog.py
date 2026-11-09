@@ -2384,6 +2384,51 @@ def print_reviews(p):
         print("\n".join(lines), flush=True)
 
 
+GATE_SLICE_MS = 120000  # the dashboard rereads gates every 120 s (fleet.RUNS_EVERY)
+
+
+def gate_news(p, failed):
+    """({PR: resolution} for the open landing gates resolved and not yet reported, whether one is still pending).
+    Open: opened under human-gate, neither approved nor landed. Each gate is reported once (gates.json keeps the
+    ids): a held gate, or a land `orch land` refuses before recording `approved`, stays open and would end every
+    wait. An unreadable gate counts as pending and prints one line per wait (`failed`): it never ends the wait."""
+    if p.cfg.get("merge_policy") != "human-gate":
+        return {}, False
+    events = p.events()
+    gates = {n: st["gate_opened"].get("gate") for n, st in pr_state(events).items()
+             if "gate_opened" in st and "approved" not in st and "landed" not in st}
+    path = p.dir / "gates.json"
+    try:
+        told = set(json.loads(path.read_text()))
+    except (OSError, ValueError, TypeError):
+        told = set()
+    news, pending = {}, False
+    for n, gid in gates.items():
+        if gid in told:
+            continue
+        try:
+            res = gate_resolution(p.cfg, events, n)
+        except (SystemExit, Exception) as e:
+            res = None
+            if n not in failed:
+                failed.add(n)
+                print(f"GATE #{n} unreadable ({type(e).__name__}: {e}); the wait goes on", flush=True)
+        if res:
+            news[n] = res
+        else:
+            pending = True
+    if news:
+        with contextlib.suppress(OSError):
+            path.write_text(json.dumps(sorted(told | {gates[n] for n in news})))
+    return news, pending
+
+
+def print_gates(slug, resolved):
+    for n, res in resolved.items():
+        print(f"GATE #{n} resolved: {res}\n  orch land {slug} --pr {n}"
+              + ("" if res == "land" else f"  (closes its Land #{n} Task; the PR waits until you gate it again)"), flush=True)
+
+
 def cmd_wait(argv):
     p = Program(argv[0])
     timeout = opt(argv, "--timeout-ms", "540000")
@@ -2411,9 +2456,24 @@ def cmd_wait(argv):
         print(line, flush=True)
     if watched := watch_lines(me, False):
         print("\n".join(watched), flush=True)
+    # A gate the human resolves sends no Orca message, so the typed wait never wakes for it: read the open gates,
+    # between slices of at most 120 s while one is pending. A gate opened during the wait is sliced from the next round.
+    failed = set()
+    done, pending = gate_news(p, failed)
+    if done:
+        print_gates(p.slug, done)
+        return
     for i in range(rounds):
-        res = orca_json("orchestration", "check", *box, "--wait", "--types", ",".join(sorted(ACTIONABLE)),
-                        "--timeout-ms", timeout)
+        t = int(timeout) if pending else 0
+        for ms in [str(min(GATE_SLICE_MS, t - s)) for s in range(0, t, GATE_SLICE_MS)] or [timeout]:
+            res = orca_json("orchestration", "check", *box, "--wait", "--types", ",".join(sorted(ACTIONABLE)),
+                            "--timeout-ms", ms)
+            if any(batch(res)):
+                break
+            done, pending = gate_news(p, failed)
+            if done:
+                print_gates(p.slug, done)
+                return
         did, msgs = batch(res)
         # Orca's concise --json has no deliveryId, and the typed wait already took its batch: keep those messages.
         if not did and not msgs:
@@ -2442,6 +2502,10 @@ def cmd_wait(argv):
         if did:
             orca_json("orchestration", "check", *box, "--ack", did)
         print(f"wait {i + 1}/{rounds}: nothing actionable ({len(msgs)} heartbeat(s) or refusals acked)", flush=True)
+        done, pending = gate_news(p, failed)  # an ignored batch ended the slices before their gate read
+        if done:
+            print_gates(p.slug, done)
+            return
         if print_stuck(p, run_id, only_new=True):
             print_sweep(run_id, p.dir / "self-check.json")
             print("STUCK: a worker waits on a prompt nobody sees; answer or escalate it now", flush=True)
