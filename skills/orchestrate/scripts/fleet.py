@@ -196,9 +196,10 @@ def orca(*args, timeout=30):
 def fetch_fast():
     calls = {"worktrees": ("worktree", "ps", "--limit", "500"), "terminals": ("terminal", "list"),
              "messages": ("orchestration", "inbox", "--limit", str(INBOX_LIMIT))}
+    at = time.time() * 1000  # agent_phase judges output times as of this read, also when a failed collect reuses it
     with concurrent.futures.ThreadPoolExecutor(len(calls)) as pool:
         futures = {k: pool.submit(orca, *args) for k, args in calls.items()}
-        return {k: f.result().get(k, []) for k, f in futures.items()}
+        return {**{k: f.result().get(k, []) for k, f in futures.items()}, "at": at}
 
 
 RUN_CACHE = {}  # run id -> (monotonic time read, {"workers", "tasks", "gates"}) for runs that had stopped moving
@@ -757,10 +758,11 @@ def orca_links(w):
     return refs, pr
 
 
-def agent_row(a, last_output=None):
-    """`last_output`: the ms its terminal last printed; skills-sync's agent_phase reads a silent "working" as done."""
+def agent_row(a, last_output=None, read_at=None):
+    """`last_output`: the ms its terminal last printed, as of the read at `read_at` (ms, None for now); skills-sync's
+    agent_phase reads a silent "working" as done."""
     phase = getattr(load_sync(), "agent_phase", None)
-    return {"pane": a.get("paneKey"), "state": phase(a.get("state"), last_output) if phase else a.get("state"),
+    return {"pane": a.get("paneKey"), "state": phase(a.get("state"), last_output, read_at) if phase else a.get("state"),
             "type": a.get("agentType"),
             "mode": a.get("workingMode"), "tool": a.get("toolName"), "detail": mask(a.get("toolInput"), 140),
             "since": ms_iso(a.get("stateStartedAt")), "updated": ms_iso(a.get("updatedAt")),
@@ -794,7 +796,7 @@ def build_sessions(fast, runs, cfg, declared=()):
     for w in fast["worktrees"]:
         if w.get("isArchived"):
             continue
-        agents = [agent_row(a, out_of_pane.get(a.get("paneKey"))) for a in w.get("agents") or []]
+        agents = [agent_row(a, out_of_pane.get(a.get("paneKey")), fast.get("at")) for a in w.get("agents") or []]
         terms = terms_by_wt.get(w["worktreeId"], [])
         if w.get("isMainWorktree") and not agents and not cfg.get("include_main_worktrees"):
             continue

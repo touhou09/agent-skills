@@ -13,7 +13,7 @@ import fleet  # noqa: E402  after the env points the state directory at root
 
 fleet.CLAUDE_HOMES = ()  # only the CLAUDE_CONFIG_DIR a block points at, never this machine's sessions
 
-fetch_runs = fleet.fetch_runs  # later swapped for the fake world's
+fetch_runs, fetch_fast = fleet.fetch_runs, fleet.fetch_fast  # later swapped for the fake world's
 
 state_dir = pathlib.Path(os.environ["ORCH_FLEET_STATE"])
 now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
@@ -1821,16 +1821,25 @@ assert last_activity(10 * hour) == fleet.ms_iso(10 * hour) and last_activity(Non
 
 # A "working" agent whose terminal has printed nothing for 10 minutes ended its turn without a Stop hook: the session is
 # idle, so a pending reload is retried there. A terminal that just printed, or an agent with no terminal, keeps Orca's word.
-def phase(*out_ago_s):
+def phase(*out_ago_s, read_ago_s=None):
     t_ms = dt.datetime.now(dt.timezone.utc).timestamp() * 1000
     fast = {"worktrees": [{"worktreeId": "w", "path": "/work/w", "agents": [{"paneKey": f"t{n}:l{n}", "state": "working"}
                                                                           for n in range(len(out_ago_s))]}],
             "terminals": [{"handle": f"h{n}", "worktreeId": "w", "tabId": f"t{n}", "leafId": f"l{n}", "agentIdentity": "claude",
                            "lastOutputAt": t_ms - s * 1000} for n, s in enumerate(out_ago_s) if s is not None]}
+    if read_ago_s is not None:
+        fast["at"] = t_ms - read_ago_s * 1000
     return fleet.build_sessions(fast, {"runs": [], "workers": [], "tasks": []}, {})[0]["w"]["phase"]
 
 
 assert phase(600) == "idle" and phase(5) == "working" and phase(None) == "working" and phase(600, 5) == "working"
+# A collect that failed reuses the last read: its output times are judged at the time of that read, not now.
+assert phase(600, read_ago_s=595) == "working" and phase(600, read_ago_s=0) == "idle"
+real_orca, fleet.orca = fleet.orca, (lambda *a, **k: {})
+try:
+    assert isinstance(fetch_fast().get("at"), float), "fetch_fast stamps its read"
+finally:
+    fleet.orca = real_orca
 
 # Classification of a finished turn's last lines.
 assert fleet.classify("Build done. E2E test failed on the login page.") == "verify_failed"

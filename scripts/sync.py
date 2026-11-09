@@ -309,11 +309,12 @@ def screen(handle):
     meta = meta.get("terminal", meta)
     if meta.get("agentIdentity") != "claude" or not meta.get("connected") or not meta.get("writable"):
         return [], "not a connected, writable Claude terminal"
+    agent = agent_of(meta)  # before the screen: a slow Orca list must never leave an old screen to be judged
     t = orca("terminal", "read", "--terminal", handle, "--screen")["terminal"]
     if t.get("source") not in (None, "screen"):
         return [], f"no rendered screen ({t.get('source')})"
     tail = t.get("tail") or []
-    return tail, classify(tail, meta.get("title") or "", t.get("draft") or "", agent_of(meta))
+    return tail, classify(tail, meta.get("title") or "", t.get("draft") or "", agent)
 
 
 def agent_of(meta):

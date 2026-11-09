@@ -56,6 +56,7 @@ elif a[:2] == ["terminal", "send"]:
     top = [i for i, l in enumerate(base) if l.startswith("─")][-2]
     t["screens"] = [base[:top] + ["❯ " + text] + shown + base[top:]]
     out = {}
+st.setdefault("calls", []).append(" ".join(a[:2]))
 json.dump(st, open(path, "w"))
 print(json.dumps({"ok": True, "result": out}))
 '''
@@ -244,6 +245,9 @@ def test_screen_reads_orca_state():
     check("a working agent silent for 10 minutes is judged by its screen", got["stale"] is None, got)
     check("no Orca agent: a plain title leaves it to the screen", got["bare"] is None, got)
     check("no Orca agent: a spinner title is busy", got["glyph"] == "title shows the agent is busy", got)
+    calls = json.loads(st.read_text())["calls"]
+    check("the agent state is read before the screen it judges (a slow read never judges an old screen)",
+          calls == ["terminal show", "worktree ps", "terminal read"] * len(terms), calls)
     shutil.rmtree(tmp)
 
 
