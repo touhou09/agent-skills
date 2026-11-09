@@ -62,6 +62,10 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/shots.py" upload --repo owner/repo --pr N \
 - On a private repo the images are visible only to people with access, same as the PR.
 - When the upload cannot run (no `ego-browser`, no sign-in), report the screenshots as NOT VERIFIED
   with the local paths. Do not commit images to the repo to get around it.
+- In an `orchestrate` program the human listed under `orchestrate.visual_evidence_local` in
+  `~/.claude/agent-skills.json`, skip the upload. The lead judges the local shots and records
+  `orch visual <slug> --pr N --sha <head> --shots <evidence dir>`; `land` checks that row instead of
+  an image in the comment. Keep the evidence directory until the PR lands.
 
 ## Putting them in the sticky comment
 
@@ -83,6 +87,11 @@ load after the sticky is up, not before. The comment then reads:
 ### 스크린샷
 …
 ```
+
+In a program that skips the upload (above), the comment carries the verdict line without the
+`### 스크린샷` section; the images stay in the local evidence directory. Its `orch visual` row is
+pinned to the patch-id, so any commit that changes the patch needs the row recorded again, with the
+same shots when the rendered output did not change.
 
 The verdict holds for the head it was judged on. A commit that changes the rendered output needs new
 shots and a new verdict; one that does not (a test, a comment) keeps them, and the verdict line says

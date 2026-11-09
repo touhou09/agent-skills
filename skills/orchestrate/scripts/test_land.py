@@ -38,6 +38,8 @@ elif a[:2] == ["pr", "view"]:
                                         url=f"https://x/pull/{a[2]}", title="t", headRefName=f"b{a[2]}")))
 elif a[:2] == ["pr", "diff"]:
     print(pr(a[2])["diff"])
+    if pr(a[2]).get("push_on_diff"):  # a commit lands while the caller reads the diff
+        pr(a[2])["headRefOid"] = pr(a[2]).pop("push_on_diff"); save()
 elif a[:2] == ["pr", "merge"]:
     p = pr(a[2])
     if p.get("stacked"):
@@ -102,7 +104,9 @@ def setup(prs, stacks=()):
     (d / "state.json").write_text(json.dumps({"prs": prs, "stacks": [{"id": i, "pull_requests": s} for i, s in enumerate(stacks)]}))
     env = dict(os.environ, PATH=f"{d / 'bin'}:{os.environ['PATH']}", FAKE_GH_STATE=str(d / "state.json"),
                PROGRAMS_HOME=str(d / "programs"), ORCH_DASH="off",
-               AGENT_SKILLS_LEDGER=str(d / "reap-ledger.jsonl"))
+               AGENT_SKILLS_LEDGER=str(d / "reap-ledger.jsonl"),
+               # Never the user's real file: absent means every program keeps the image rule.
+               AGENT_SKILLS_CONFIG=str(d / "no-agent-skills.json"))
     subprocess.run([sys.executable, HERE / "prog.py", "init", "t", "--repo", "o/r", "--run", "run_x"], env=env, check=True,
                    capture_output=True)
     return d, env
@@ -318,9 +322,9 @@ stale = d / "programs" / "_heavy" / "slot-gone"
 stale.write_text(json.dumps({"pid": 999999}))
 code, out = prog(dict(env, ORCH_HEAVY_SLOT=str(stale)), "heavy", "t", "--wait-minutes", "0", "--", "true")
 assert code == 1 and "every slot busy" in out, out
-(d / "programs" / "_heavy" / "slot-0.stacks").write_text("123\n")  # a nested run's stack list is no holder
+(d / "programs" / "_heavy" / "slot-0.stacks").write_text("verify-z\n")  # a nested run's stack list is no holder
 code, out = prog(env, "heavy", "t", "--wait-minutes", "0", "--", "true")
-assert code == 1 and "every slot busy" in out and "Traceback" not in out and "123" not in out, out
+assert code == 1 and "every slot busy" in out and "Traceback" not in out and "verify-z" not in out, out
 code, out = prog(dict(env, ORCH_HEAVY_SLOT=str(d / "programs" / "_heavy" / "slot-0")), "heavy", "t", "--wait-minutes", "0",
                  "--", "true")  # a live slot that is not an ancestor's
 assert code == 1 and "every slot busy" in out, out
@@ -543,6 +547,86 @@ d, env = setup({"48": dict(shown(48), stacked=True),
 verdict(d, 48, "T-48"); verdict(d, 49, "T-49")
 code, out = prog(env, "land", "t", "--pr", "49")
 assert code == 3 and "#48 changes the screen" in out, out
+
+# A program the human listed in agent-skills.json (orchestrate.visual_evidence_local) lands a screen PR on the lead's
+# local judgement, `orch visual`, instead of an image in the comment. Nothing else turns that on.
+def local(n, config=None):
+    d, env = setup({str(n): shown(n)})
+    cfg = d / "agent-skills.json"
+    cfg.write_text(config if isinstance(config, str) else
+                   json.dumps({"orchestrate": {"visual_evidence_local": ["t"] if config is None else config}}))
+    env["AGENT_SKILLS_CONFIG"] = str(cfg)
+    (d / "shots").mkdir()
+    (d / "shots" / "members-1440-light.png").write_bytes(b"\x89PNG\r\n")
+    verdict(d, n, f"T-{n}")
+    return d, env
+d, env = local(40)
+code, out = prog(env, "visual", "t", "--pr", "40", "--sha", "h40", "--shots", str(d / "shots"))
+assert code == 0 and [e["ev"] for e in ledger(d)][-1] == "visual", out
+assert ledger(d)[-1]["patch_id"] == pid(40) and ledger(d)[-1]["result"] == "pass", ledger(d)[-1]
+code, out = prog(env, "land-check", "t", "--pr", "40")
+assert "visual evidence: local" in out and "changes the screen" in out, out
+code, out = prog(env, "land", "t", "--pr", "40")
+assert code == 0 and "landed #40" in out and "visual evidence: local (agent-skills.json" in out, out
+# `orch visual` pins the head it judged, and a judgement needs an image to point at.
+d, env = local(40)
+code, out = prog(env, "visual", "t", "--pr", "40", "--sha", "hOLD", "--shots", str(d / "shots"))
+assert code == 1 and "not the judged" in out, out
+(d / "empty").mkdir()
+code, out = prog(env, "visual", "t", "--pr", "40", "--sha", "h40", "--shots", str(d / "empty"))
+assert code == 1 and "no image" in out, out
+st = json.loads((d / "state.json").read_text()); st["prs"]["40"]["push_on_diff"] = "h40b"; (d / "state.json").write_text(json.dumps(st))
+code, out = prog(env, "visual", "t", "--pr", "40", "--sha", "h40", "--shots", str(d / "shots"))
+assert code == 1 and "moved" in out, out
+assert "visual" not in [e["ev"] for e in ledger(d)]
+# Listed, and still refused: no judgement, a failed one, a patch changed after it, the images gone.
+d, env = local(40)
+code, out = prog(env, "land", "t", "--pr", "40")
+assert code == 3 and "orch visual t --pr 40" in out, out
+d, env = local(40)
+prog(env, "visual", "t", "--pr", "40", "--sha", "h40", "--shots", str(d / "shots"), "--result", "fail")
+code, out = prog(env, "land", "t", "--pr", "40")
+assert code == 3 and "fail" in out, out
+d, env = local(40)
+prog(env, "visual", "t", "--pr", "40", "--sha", "h40", "--shots", str(d / "shots"))
+st = json.loads((d / "state.json").read_text()); st["prs"]["40"]["diff"] = diff(400); (d / "state.json").write_text(json.dumps(st))
+with (d / "programs" / "t" / "ledger.jsonl").open("a") as f:  # re-reviewed code; the screen was not judged again
+    f.write(json.dumps({"ts": "2026-09-24T00:00:00+00:00", "ev": "verdict", "pr": 40, "sha": "h40",
+                        "patch_id": pid(400), "result": "pass"}) + "\n")
+code, out = prog(env, "land", "t", "--pr", "40")
+assert code == 3 and "patch changed since the visual judgement" in out, out
+d, env = local(40)
+prog(env, "visual", "t", "--pr", "40", "--sha", "h40", "--shots", str(d / "shots"))
+(d / "shots" / "members-1440-light.png").unlink()
+code, out = prog(env, "land", "t", "--pr", "40")
+assert code == 3 and "no image" in out, out
+# A row with an empty shots path (only a hand-edited ledger has one) is no image, not the working directory's.
+d, env = local(40)
+with (d / "programs" / "t" / "ledger.jsonl").open("a") as f:
+    f.write(json.dumps({"ts": "2026-09-24T00:00:00+00:00", "ev": "visual", "pr": 40, "sha": "h40",
+                        "patch_id": pid(40), "shots": "", "result": "pass"}) + "\n")
+r = subprocess.run([sys.executable, HERE / "prog.py", "land", "t", "--pr", "40"], env=env, cwd=d / "shots",
+                   capture_output=True, text=True)
+assert r.returncode == 3 and "no image" in r.stdout + r.stderr, r.stdout + r.stderr
+# Not listed: another slug, a malformed or unreadable file, or the key in program.json keeps the image rule.
+for config in (["other"], "t", {"t": True}, "{not json"):
+    d, env = local(40, config if config != "t" else json.dumps({"orchestrate": {"visual_evidence_local": "t"}}))
+    prog(env, "visual", "t", "--pr", "40", "--sha", "h40", "--shots", str(d / "shots"))
+    code, out = prog(env, "land", "t", "--pr", "40")
+    assert code == 3 and "does not exist" in out and "visual evidence: local" not in out, (config, out)
+d, env = local(40, ["other"])
+with (d / "programs" / "t" / "program.json").open("r+") as f:
+    cfg = json.load(f); cfg["visual_evidence_local"] = ["t"]; cfg["orchestrate"] = {"visual_evidence_local": ["t"]}
+    f.seek(0); json.dump(cfg, f); f.truncate()
+prog(env, "visual", "t", "--pr", "40", "--sha", "h40", "--shots", str(d / "shots"))
+code, out = prog(env, "land", "t", "--pr", "40")
+assert code == 3 and "does not exist" in out, out
+# The agent's own commands cannot turn it on or forge the judgement.
+for key in ("visual_evidence", "visual_evidence_local"):
+    code, out = prog(env, "set", "t", key, "local")
+    assert code == 1 and "skills-config" in out, (key, out)
+code, out = prog(env, "record", "t", "visual", "--pr", "40", "--sha", "h40")
+assert code == 1 and "written only by the command" in out, out
 
 # dep is per ticket: a self edge is refused, and one already in the ledger does not hold the ticket.
 d, env = setup({"25": pr(25)})

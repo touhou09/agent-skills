@@ -112,6 +112,7 @@ Main CI is every push-triggered run at the merge commit. Watch it with the lines
 `land` and `land-check` also read the PR's sticky `<!-- test-results -->` comment (`deliver-ticket` §5):
 
 - A PR that changes a file matching `visual_paths` (default `apps/web/*`, `*.css`, `*.stories.*`, `packages/ui/*`) needs at least one image that comment renders: markdown `![](https://…)` or `<img src="https://…">`, outside code blocks. Text saying screenshots were taken does not count. Only a person exempts a PR, with the label `no-visual-change`; `land` then prints the exemption. A worker never adds that label: `land` sees only that the label is there, not who added it. The first comment carrying the marker counts, the one `sticky-comment.sh` updates.
+  - A program the human listed in `~/.claude/agent-skills.json` under `orchestrate.visual_evidence_local` needs no image in the comment. `land` reads the lead's `visual` row instead, written by `orch visual <slug> --pr N --sha <head> --shots <dir> [--result pass|fail]`. It passes when the result is `pass`, the PR's patch-id still matches the judged one, and the directory still holds an image; `land` then prints `visual evidence: local (agent-skills.json: <path>)`. Only the script `skills-config` emits, run by the human, changes that key: `orch set` refuses it, `orch record` refuses a `visual` row, and `program.json` is not read for it.
 - Every failed run (`failure`, `timed_out`, `startup_failure`) at one of the PR's commits needs a line in that comment naming the run id and what resolved it. A run re-run to green shows only its last attempt, and a run at a commit a rebase dropped is no longer the PR's, so neither is listed.
 
 ## Main red: the guardian decides, the lead coordinates
@@ -136,7 +137,7 @@ With no guardian running, whoever is about to record `main_red` does its read fi
   - `HELD` lines are PRs on hold (`record parked`). They do not count as stale, so they never block spawning; close a superseded one on GitHub so it leaves the land order.
 - A landing backlog over `max_backlog_hours` means **stop starting, start finishing**.
 - Merges you did not make: `land` records a PR that was merged outside it.
-- Tune a program in `program.json` under `"landing"`: `aging_hours`, `stale_hours`, `max_backlog_hours`, `land_interval_minutes` (only the backlog estimate before two landings exist, never a pacing limit), `exclusive_stale_minutes`, `exclusive_paths`, `visual_paths` (`orch set <slug> visual_paths a/*,b/*`), `heavy_slots`.
+- Tune a program in `program.json` under `"landing"`: `aging_hours`, `stale_hours`, `max_backlog_hours`, `land_interval_minutes` (only the backlog estimate before two landings exist, never a pacing limit), `exclusive_stale_minutes`, `exclusive_paths`, `visual_paths` (`orch set <slug> visual_paths a/*,b/*`: which PRs need visual evidence; whether that evidence is a comment image or the lead's local judgement is the human's `orchestrate.visual_evidence_local`, never a program knob), `heavy_slots`.
 - Shared state is append-only (`ledger.jsonl`) or replaced whole: write a temp file and rename it, since a shared JSON file overwritten in place can be read empty mid-write.
 
 ## human-gate
