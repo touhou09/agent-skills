@@ -79,7 +79,7 @@ The human must get an answer from you within seconds, at any time. You route; yo
 | Runs, tasks and their deps (the dependency graph), workers, questions, gates | Orca |
 | Verdicts, lanes, land order, landings, main red/green, the concurrency cap, deps found after dispatch | `~/.claude/programs/<slug>/ledger.jsonl`, written only through `orch` |
 | Briefs as sent | `~/.claude/programs/<slug>/briefs/<ticket>.md` |
-| Decision trail | `~/.claude/programs/<slug>/decisions.tsv` (`show-me-your-work`) |
+| Decision trail | `~/.claude/programs/<slug>/decisions.tsv` (`show-me-your-work`), one row per decision, appended with `bash "${CLAUDE_SKILL_DIR}/../show-me-your-work/scripts/log.sh" <file> <phase> <decision> <why> <evidence> <result>` before the act it decides (a merge, a dispatch); the script stamps `ts` and writes the header |
 | Lessons: raw signals / what became of them | `signal` rows in the ledger / the lessons ledger in the notes store (`reflect`) |
 | What the human watches | `orch-dash` dashboard (`references/dashboard.md`) |
 | Who does what beside the ticket workers | Standing roles: main guardian, QA lead, flow improver, resource steward (`references/roles.md`) |
