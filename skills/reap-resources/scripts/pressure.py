@@ -31,7 +31,9 @@ import contextlib, ctypes, ctypes.util, fcntl, hashlib, json, math, os, pathlib,
 HERE = pathlib.Path(__file__).resolve().parent
 REAP = HERE / "reap.py"
 sys.path.insert(0, str(HERE))
+sys.path.append(str(HERE.parents[2] / "scripts"))
 import reap  # noqa: E402
+import sync  # noqa: E402  the platform's idle judgment (agent_phase)
 
 LABEL = "io.github.jeongjaesoon.pressure-watch"
 PLIST = pathlib.Path(f"~/Library/LaunchAgents/{LABEL}.plist").expanduser()
@@ -201,8 +203,8 @@ def judge(m, cfg):
 
 
 def active_turns(run=sh):
-    """Agent turns Orca shows in progress (state "working") over every card; None when Orca cannot say, a cut-short
-    list included."""
+    """Agent turns in progress over every card: Orca's "working", unless the card printed nothing for sync.STALE_MS
+    (a turn that ended without its Stop hook). None when Orca cannot say, a cut-short list included."""
     out = run(["orca", "worktree", "ps", "--limit", "10000", "--json"], timeout=5)  # sh gives None when orca is missing
     try:
         data = json.loads(out or "")
@@ -212,7 +214,9 @@ def active_turns(run=sh):
     trees = res.get("worktrees") if isinstance(res, dict) else None
     if not isinstance(trees, list) or res.get("truncated"):
         return None
-    return sum(isinstance(a, dict) and a.get("state") == "working"
+    # ponytail: the card's last output, not the pane's (one Orca call in a hook); a shell printing in the same card
+    # keeps a stale agent counted, which errs toward waiting. Match panes via `orca terminal list` if that bites.
+    return sum(isinstance(a, dict) and sync.agent_phase(a.get("state"), w.get("lastOutputAt")) == "working"
                for w in trees if isinstance(w, dict) for a in w.get("agents") or [])
 
 

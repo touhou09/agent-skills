@@ -206,12 +206,31 @@ def prompt_box(lines):
     return (rules[-2], rules[-1]) if len(rules) >= 2 else None
 
 
-def classify(lines, title, draft=""):
+# Orca's agent state comes from hooks, so a turn that ended without its Stop hook (an Esc, a crash) stays "working".
+# A running turn redraws its spinner every second: this long without output, it is not running.
+STALE_MS = 120_000
+# Claude Code's title starts with a spinner glyph while it works. ✳ (idle), an AI title and "Claude Code" say nothing.
+BUSY_TITLE = re.compile(r"^[^\w\s✳]\s")
+
+
+def agent_phase(state, last_output_ms, now_ms=None):
+    """Orca's state for an agent, with a "working" whose terminal printed nothing for STALE_MS read as "done"; an
+    unknown output time keeps Orca's word. The one idle judgment of skills-sync, the dashboard and the load gate."""
+    now_ms = time.time() * 1000 if now_ms is None else now_ms
+    if state == "working" and last_output_ms is not None and now_ms - last_output_ms >= STALE_MS:
+        return "done"
+    return state
+
+
+def classify(lines, title, draft="", agent=None):
     """Return None when the screen is a Claude session idle at an empty prompt, else the reason it is not.
-    Anything not positively recognized is a reason: a stray Enter answers whatever dialog is open."""
+    Anything not positively recognized is a reason: a stray Enter answers whatever dialog is open.
+    `agent` is the agent_phase of Orca's agent on this terminal; the title counts only when Orca has none."""
     lines = norm(lines)
     body = [l.strip() for l in lines if l.strip()]
-    if not title.startswith("✳"):
+    if agent == "working":
+        return "turn in progress: Orca shows the agent working"
+    if agent is None and BUSY_TITLE.match(title):
         return "title shows the agent is busy"
     if draft:
         # Orca's own composer, not the terminal: the screen's prompt box can be empty while it holds text.
@@ -294,7 +313,18 @@ def screen(handle):
     if t.get("source") not in (None, "screen"):
         return [], f"no rendered screen ({t.get('source')})"
     tail = t.get("tail") or []
-    return tail, classify(tail, meta.get("title") or "", t.get("draft") or "")
+    return tail, classify(tail, meta.get("title") or "", t.get("draft") or "", agent_of(meta))
+
+
+def agent_of(meta):
+    """agent_phase of the Orca agent on this terminal's pane; None when Orca lists none there or cannot say."""
+    pane = f"{meta.get('tabId')}:{meta.get('leafId')}"
+    try:
+        a = next((a for w in orca("worktree", "ps", "--limit", "500")["worktrees"] for a in w.get("agents") or []
+                  if a.get("paneKey") == pane), None)
+    except (Stop, KeyError, TypeError):
+        return None
+    return a and agent_phase(a.get("state"), meta.get("lastOutputAt"))
 
 
 def send_to(handle, text, confirmed):

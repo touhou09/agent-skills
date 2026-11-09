@@ -757,8 +757,11 @@ def orca_links(w):
     return refs, pr
 
 
-def agent_row(a):
-    return {"pane": a.get("paneKey"), "state": a.get("state"), "type": a.get("agentType"),
+def agent_row(a, last_output=None):
+    """`last_output`: the ms its terminal last printed; skills-sync's agent_phase reads a silent "working" as done."""
+    phase = getattr(load_sync(), "agent_phase", None)
+    return {"pane": a.get("paneKey"), "state": phase(a.get("state"), last_output) if phase else a.get("state"),
+            "type": a.get("agentType"),
             "mode": a.get("workingMode"), "tool": a.get("toolName"), "detail": mask(a.get("toolInput"), 140),
             "since": ms_iso(a.get("stateStartedAt")), "updated": ms_iso(a.get("updatedAt")),
             "title": mask(a.get("taskTitle") or a.get("displayName"), 120),
@@ -786,11 +789,12 @@ def build_sessions(fast, runs, cfg, declared=()):
              "writable": bool(t.get("writable")), "connected": bool(t.get("connected")),
              "last_output": ms_iso(t.get("lastOutputAt"))})
     wt_of_handle = {t.get("handle"): t.get("worktreeId") for t in fast["terminals"]}
+    out_of_pane = {f"{t.get('tabId')}:{t.get('leafId')}": t.get("lastOutputAt") for t in fast["terminals"]}
     sessions = {}
     for w in fast["worktrees"]:
         if w.get("isArchived"):
             continue
-        agents = [agent_row(a) for a in w.get("agents") or []]
+        agents = [agent_row(a, out_of_pane.get(a.get("paneKey"))) for a in w.get("agents") or []]
         terms = terms_by_wt.get(w["worktreeId"], [])
         if w.get("isMainWorktree") and not agents and not cfg.get("include_main_worktrees"):
             continue
