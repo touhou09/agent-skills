@@ -149,7 +149,7 @@ assert not any(i.get("held") for i in items(st)) and [fleet.needs_rank(i) for i 
 assert fleet.trigger_at("2026-11-02 14:30", now).strftime("%Y-%m-%d %H:%M") == "2026-11-02 14:30"
 assert fleet.trigger_at("v1.2 배포 뒤", now) is None and fleet.trigger_at("acme/app#9 머지 뒤", now) is None
 
-# A reload skills-sync could not send sits on its terminal's session (and counts there), titled with the terminal;
+# A reload skills-sync could not send sits on its terminal's session (and counts there), titled with that session;
 # one for a terminal Orca no longer lists is gone.
 pending_path = state_dir.parent / "reload-pending.json"
 fleet.write_atomic(pending_path, json.dumps({"since": "t1", "failed": {
@@ -160,8 +160,8 @@ assert not items(st, "reload_pending"), "still being retried: not the owner's ye
 fleet.RELOAD_FAILS.update(term_login=fleet.RELOAD_ALERT_TRIES, term_export=fleet.RELOAD_ALERT_TRIES)
 st = f.tick(force=True)
 assert sorted((i["session"], i["title"], i["detail"]) for i in items(st, "reload_pending")) == [
-    ("wt-export", "Reload not sent: ◑ ACME-102", "title shows the agent is busy"),
-    ("wt-login", "Reload not sent: ✳ ACME-101", "composer holds a draft")], items(st, "reload_pending")
+    ("wt-export", "Reload not sent: ACME-102 billing export", "title shows the agent is busy"),
+    ("wt-login", "Reload not sent: ACME-101 login flow", "composer holds a draft")], items(st, "reload_pending")
 badges_agree(st)
 
 
@@ -192,7 +192,7 @@ fleet.RELOAD_TRIED.clear()
 pending_path.unlink()
 assert fleet.retry_reloads(fake) == [] and len(fake.calls) == 1
 st = f.tick(force=True)
-assert any(e["kind"] == "item_resolved" and e["text"] == "reload_delivered: Reload not sent: ◑ ACME-102" for e in st["timeline"])
+assert any(e["kind"] == "item_resolved" and e["text"] == "reload_delivered: Reload not sent: ACME-102 billing export" for e in st["timeline"])
 # A reload is the owner's only once the idle terminal refused the dashboard's retry reload_alert_tries times in a row,
 # and it leaves with a timeline line when it is delivered.
 class Refusing(FakeBroadcast):
@@ -210,13 +210,69 @@ for n in range(fleet.RELOAD_ALERT_TRIES):
 assert refusing.calls == ["term_login"] * fleet.RELOAD_ALERT_TRIES
 st = f.tick(force=True)
 assert [i["session"] for i in items(st, "reload_pending")] == ["wt-login"], items(st, "reload_pending")
-delivered = lambda st: sum(e["kind"] == "item_resolved" and e["text"] == "reload_delivered: Reload not sent: ✳ ACME-101"  # noqa: E731
+delivered = lambda st: sum(e["kind"] == "item_resolved" and e["text"] == "reload_delivered: Reload not sent: ACME-101 login flow"  # noqa: E731
                            for e in st["timeline"])
 n = delivered(st)
 pending_path.unlink()
 st = f.tick(force=True)
 assert not items(st, "reload_pending") and delivered(st) == n + 1
 assert delivered(f.tick(force=True)) == n + 1, "once"
+
+
+# A retry refused only because the terminal was busy (skills-sync's idle check is stricter than the session's phase) is
+# not counted, and neither is one refused for the lock: the reload is retried until it lands and never becomes an item.
+# A busy refusal does not reset a count already running either. Each is judged by what this call printed, as skills-sync
+# does, never by a reason an earlier call left in the file.
+class Printing(FakeBroadcast):
+    def __init__(self, said, record=None):
+        super().__init__()
+        self.said, self.record = said, record
+
+    def broadcast(self, kind, dry_run, only=None):
+        self.calls.append(only)
+        if self.record:
+            p = json.loads(pending_path.read_text())
+            p["failed"][only] = {"reason": self.record}
+            fleet.write_atomic(pending_path, json.dumps(p))
+        print(self.said.format(h=only))
+        return 1
+
+
+busy = "title shows the agent is busy"
+for refuser in (Printing("{h}  " + busy, busy), Printing(fleet.RELOAD_LOCKED + "; the reload stays pending")):
+    fleet.write_atomic(pending_path, json.dumps({"since": "t3", "failed": {"term_login": {"reason": "prompt box not recognized"}}}))
+    fleet.RELOAD_FAILS["term_login"] = 1
+    for n in range(fleet.RELOAD_ALERT_TRIES + 2):
+        fleet.RELOAD_TRIED.clear()
+        assert fleet.retry_reloads(refuser) == [], n
+    assert refuser.calls == ["term_login"] * (fleet.RELOAD_ALERT_TRIES + 2), refuser.calls
+    assert fleet.RELOAD_FAILS["term_login"] == 1, (refuser.said, fleet.RELOAD_FAILS)
+    assert not items(f.tick(force=True), "reload_pending"), refuser.said
+    fleet.RELOAD_TRIED.clear()
+    assert fleet.retry_reloads(fake) == ["term_login"] and "term_login" not in fleet.RELOAD_FAILS, fleet.RELOAD_FAILS
+# A failure that writes nothing is counted although the file still says busy: the terminal went away, or Orca's list failed.
+for said in ("{h}  not a connected, writable Claude terminal", "cannot list Orca terminals, reload stays pending: x"):
+    fleet.write_atomic(pending_path, json.dumps({"since": "t4", "failed": {"term_login": {"reason": busy}}}))
+    fleet.RELOAD_TRIED.clear()
+    assert fleet.retry_reloads(Printing(said)) == [] and fleet.RELOAD_FAILS.pop("term_login") == 1, said
+# A printed reason a person must act on becomes the item after reload_alert_tries refusals, titled with the session;
+# busy refusals in between (human, busy, human, ...) neither count nor reset the count.
+for why in ("prompt box not recognized", "sent, but the screen does not show it was taken"):
+    fleet.write_atomic(pending_path, json.dumps({"since": "t5", "failed": {"term_login": {"reason": busy}}}))
+    human, between = Printing("{h}  " + why, why), Printing("{h}  " + busy, busy)
+    for n in range(fleet.RELOAD_ALERT_TRIES):
+        assert not items(f.tick(force=True), "reload_pending"), (why, n)
+        for refuser in ((between,) if n else ()) + (human,):
+            fleet.RELOAD_TRIED.clear()
+            assert fleet.retry_reloads(refuser) == []
+    assert len(human.calls) == fleet.RELOAD_ALERT_TRIES and len(between.calls) == fleet.RELOAD_ALERT_TRIES - 1
+    assert [(i["session"], i["terminal"], i["title"], i["detail"]) for i in items(f.tick(force=True), "reload_pending")] == [
+        ("wt-login", "term_login", "Reload not sent: ACME-101 login flow", why)], items(f.tick(force=True), "reload_pending")
+    fleet.RELOAD_FAILS.pop("term_login")
+pending_path.unlink()
+f.tick(force=True)
+sync_src = (pathlib.Path(fleet.__file__).resolve().parents[3] / "scripts" / "sync.py").read_text()
+assert all(r in sync_src for r in fleet.RELOAD_BUSY + (fleet.RELOAD_LOCKED, 'print(f"{h}  {reason')), "sync.py still says so"
 
 # A push after approval, and CI recovering, become PR events for the platform side and new inbox state.
 world.advance()
