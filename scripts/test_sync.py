@@ -1,5 +1,5 @@
 """`sync.py` against throwaway git repos and a fake orca. Run: python3 scripts/test_sync.py"""
-import json, os, pathlib, shutil, subprocess, sys, tempfile
+import json, os, pathlib, shutil, subprocess, sys, tempfile, time
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -193,6 +193,58 @@ def test_classify():
     check("a composer draft is not sendable and the reason shows it",
           "'hi'" in (sync.classify(IDLE, idle, draft="hi") or ""))
     check("the real screen after a reload is sendable", sync.classify(RELOAD_DONE, idle) is None)
+    # Orca's agent state decides first; the title only backs it up for a terminal Orca has no agent for.
+    ai = "Fix the login redirect"  # Claude Code's AI title: no ✳, idle or not
+    check("an idle session with an AI title is sendable when Orca says done", sync.classify(IDLE, ai, agent="done") is None)
+    check("a turn Orca shows working is not sendable, whatever the title",
+          (sync.classify(IDLE, idle, agent="working") or "").startswith("turn in progress:"))
+    check("Orca's done outranks a spinner title", sync.classify(IDLE, "◑ some task", agent="done") is None)
+    check("with no Orca agent, a spinner title is busy", sync.classify(IDLE, "◑ some task") == "title shows the agent is busy")
+    for t in (ai, "Claude Code", "⠂ some task"):
+        want = t.startswith("⠂")
+        check(f"with no Orca agent, title {t!r} {'is busy' if want else 'leaves it to the screen'}",
+              (sync.classify(IDLE, t) is not None) == want)
+
+
+def test_agent_phase():
+    now = 1_000_000_000
+    check("a working agent whose terminal just printed is working", sync.agent_phase("working", now - 5_000, now) == "working")
+    check("a working agent silent past the limit ended its turn without a Stop hook",
+          sync.agent_phase("working", now - sync.STALE_MS, now) == "done")
+    check("an unknown output time keeps Orca's word", sync.agent_phase("working", None, now) == "working")
+    check("only working is corrected", sync.agent_phase("waiting", 0, now) == "waiting" and sync.agent_phase(None, 0, now) is None)
+
+
+def test_screen_reads_orca_state():
+    """screen() finds the Orca agent on the terminal's pane (paneKey is tabId:leafId) and judges by it."""
+    tmp = pathlib.Path(tempfile.mkdtemp())
+    fake = tmp / "orca"
+    fake.write_text(FAKE_ORCA); fake.chmod(0o755)
+    st = tmp / "orca.json"
+    now = time.time() * 1000
+    term = lambda title, pane=None, out=now: dict(agentIdentity="claude", connected=True, writable=True, title=title,
+                                                  screens=[IDLE], lastOutputAt=out, **dict(zip(("tabId", "leafId"), pane or ())))
+    terms = {"ai": term("Fix the login redirect", ("t1", "l1")), "spin": term("✳ x", ("t2", "l2")),
+             "stale": term("◑ x", ("t3", "l3"), out=now - 10 * 60_000), "bare": term("Claude Code"), "glyph": term("◑ y")}
+    agents = [{"paneKey": "t1:l1", "state": "done"}, {"paneKey": "t2:l2", "state": "working"},
+              {"paneKey": "t3:l3", "state": "working"}]
+    st.write_text(json.dumps({"terms": terms, "worktrees": [{"worktreeId": "wt", "agents": agents}], "sent": []}))
+    old = {k: os.environ.get(k) for k in ("SKILLS_SYNC_ORCA", "FAKE_ORCA_STATE")}
+    os.environ.update(SKILLS_SYNC_ORCA=str(fake), FAKE_ORCA_STATE=str(st))
+    import importlib
+    importlib.reload(sync)
+    try:
+        got = {h: sync.screen(h)[1] for h in terms}
+    finally:
+        for k, v in old.items():
+            os.environ.pop(k) if v is None else os.environ.__setitem__(k, v)
+        importlib.reload(sync)
+    check("an idle session with an AI title is sendable", got["ai"] is None, got)
+    check("a session Orca shows working is busy", (got["spin"] or "").startswith("turn in progress:"), got)
+    check("a working agent silent for 10 minutes is judged by its screen", got["stale"] is None, got)
+    check("no Orca agent: a plain title leaves it to the screen", got["bare"] is None, got)
+    check("no Orca agent: a spinner title is busy", got["glyph"] == "title shows the agent is busy", got)
+    shutil.rmtree(tmp)
 
 
 def test_confirm():
@@ -325,6 +377,8 @@ def test_close_setup():
 if __name__ == "__main__":
     test_reload_kind()
     test_classify()
+    test_agent_phase()
+    test_screen_reads_orca_state()
     test_confirm()
     test_sync()
     test_broadcast()

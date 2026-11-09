@@ -1818,6 +1818,20 @@ assert last_activity(10 * hour, 20 * hour, 15 * hour) == fleet.ms_iso(20 * hour)
 assert last_activity(10 * hour, 5 * hour) == fleet.ms_iso(10 * hour)
 assert last_activity(10 * hour) == fleet.ms_iso(10 * hour) and last_activity(None) is None
 
+
+# A "working" agent whose terminal has printed nothing for 10 minutes ended its turn without a Stop hook: the session is
+# idle, so a pending reload is retried there. A terminal that just printed, or an agent with no terminal, keeps Orca's word.
+def phase(*out_ago_s):
+    t_ms = dt.datetime.now(dt.timezone.utc).timestamp() * 1000
+    fast = {"worktrees": [{"worktreeId": "w", "path": "/work/w", "agents": [{"paneKey": f"t{n}:l{n}", "state": "working"}
+                                                                          for n in range(len(out_ago_s))]}],
+            "terminals": [{"handle": f"h{n}", "worktreeId": "w", "tabId": f"t{n}", "leafId": f"l{n}", "agentIdentity": "claude",
+                           "lastOutputAt": t_ms - s * 1000} for n, s in enumerate(out_ago_s) if s is not None]}
+    return fleet.build_sessions(fast, {"runs": [], "workers": [], "tasks": []}, {})[0]["w"]["phase"]
+
+
+assert phase(600) == "idle" and phase(5) == "working" and phase(None) == "working" and phase(600, 5) == "working"
+
 # Classification of a finished turn's last lines.
 assert fleet.classify("Build done. E2E test failed on the login page.") == "verify_failed"
 assert fleet.classify("Login required: run `gh auth login`, then tell me.") == "login"
