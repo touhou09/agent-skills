@@ -10,6 +10,9 @@ PROGRAM: <slug>
 
 GOAL        One sentence: the outcome, executable by someone with no access to this chat.
 SCOPE       Paths this unit may write and paths it may not. Its own worktree and branch.
+            Shared runtime slots it takes, named by the fixed resources each binds (ports,
+            files, devices), not by its heaviest part: a run that binds any one of them, even
+            one light component, takes the whole slot.
             Scratch root: <none, or the one path outside the worktree it may write, e.g. a
             directory a VM or container mounts>.
             Downloaded logs and artifacts go to <approved system temporary directory>, outside
