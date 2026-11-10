@@ -319,7 +319,8 @@ five or more test files, `npm test`, a bare `bun test`, `pytest`, `jest` or `vit
 `cypress run`, an `e2e` script) or a headless Chrome outside `orch heavy` is denied with the same line wrapped in
 `orch heavy - -- bash -c '…'`, so the two machine-wide slots cap what already-running cards run, not only what
 starts. A new card (`orca worktree create`, a worker into a new worktree) is denied while Orca
-shows `active_turns_per_cpu` (0.5, 9 on 18 CPUs; null is off) agent turns per CPU in progress; the deny names
+shows `active_turns_per_cpu` (0.5, 9 on 18 CPUs; null is off) agent turns per CPU in progress (a `working` agent
+in a card silent for two minutes ended its turn without a Stop hook and is not counted); the deny names
 `Monitor` on `python3 "$P" turns --wait 15`, which exits 0 once under the cap and 3 after the wait.
 `AGENT_SKILLS_PRESSURE_GATE=0` (environment, or before the heavy command when the user said to go ahead) turns it
 off. The gate assumes the LaunchAgent is installed: without it, a machine that sits at warn costs every heavy start

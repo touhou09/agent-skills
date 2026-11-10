@@ -170,6 +170,12 @@ pressure.active_turns, pressure.turn_cap = real_turns, real_cap
 assert pressure.active_turns(run=lambda *a, **k: json.dumps({"ok": True, "result": {"worktrees": [
     {"agents": [{"state": "working"}, {"state": "done"}]}, {"agents": [{"state": "working"}]}, {"agents": None}]}})) == 2
 assert pressure.active_turns(run=lambda *a, **k: None) is None
+# A terminal agent in a card silent for 10 minutes ended its turn without a Stop hook: not a turn. No output time, or an
+# agent with no terminal of its own (a chat session beside a quiet shell): Orca's word.
+fresh, pty = time.time() * 1000, {"state": "working", "hasLivePty": True}
+assert pressure.active_turns(run=lambda *a, **k: json.dumps({"worktrees": [
+    {"lastOutputAt": fresh - 600_000, "agents": [pty]}, {"lastOutputAt": fresh, "agents": [pty]},
+    {"agents": [pty]}, {"lastOutputAt": fresh - 600_000, "agents": [{"state": "working"}]}]})) == 3
 real_which, pressure.shutil.which = pressure.shutil.which, lambda name: None  # an injected runner needs no orca
 assert pressure.active_turns(run=lambda *a, **k: json.dumps({"worktrees": [{"agents": [{"state": "working"}]}]})) == 1
 pressure.shutil.which = real_which
