@@ -13,7 +13,9 @@ A read-only reviewer reads the product's code with read tools and runs it only t
 repository's tests. Importing or running a product module outside them executes its
 import-time code on the real paths (a database migration, key files loaded), whatever the
 instructions say about not opening those paths. Put that rule in delegated review
-instructions, next to any path the reviewer must not touch.
+instructions, next to any path the reviewer must not touch, and do not loosen it there: no
+in-process probe or copied module run with the project's interpreter. A probe that would
+prove a finding becomes a test, run with the repository's test command.
 
 Check correctness, security, acceptance criteria and regressions. Use adversarial design
 questions when the change alters a public contract or a difficult invariant. Findings need
