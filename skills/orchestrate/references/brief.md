@@ -150,9 +150,7 @@ FORBIDDEN   Do not start other tickets. Do not file follow-ups: report each find
             named temporary download directory, or the one refusal-report file below (which you
             leave in place); list what you put there (checkouts, files, compose projects) in the report and tear it down
             before worker_done by moving that one named directory to the trash. A script's own
-            temporary files go there too, never loose in the system temporary root. Never `rm` a
-            glob or a path built from a variable: it stops on a permission prompt, and an empty
-            variable widens the target (any other path built from one is written `${VAR:?}`).
+            temporary files go there too, never loose in the system temporary root.
             No wrapper scripts for evidence: run the commands VERIFY names, one by one.
             A subagent whose result you would only wait for runs in the foreground, so its report
             returns as the tool result. Never end a turn with background subagents as the only
@@ -221,8 +219,11 @@ FORBIDDEN   Do not start other tickets. Do not file follow-ups: report each find
             clear the error. Continue only independently authorized acts that do not depend on
             the failed check, naming explicit paths (`git add <paths>`, never `-A`). Leave required
             verification pending; if execution or safety is uncertain, stop the affected act.
-            Report leftover files for the normal card cleanup. A failing check (a git hook,
-            linter, test or CI) is not a refusal: fix the cause and run it again.
+            Report leftover files for the normal card cleanup. Never `rm` a glob or a path built
+            from a variable: it stops on a permission prompt, and an empty variable widens the
+            target (any other path built from one is written `${VAR:?}`). A subagent removes no
+            scratch directory: the session that owns the scratch root tears it down. A failing
+            check (a git hook, linter, test or CI) is not a refusal: fix the cause and run it again.
             <repository data-sharing restrictions, applying to every reviewer and tool>
             <unit-specific bans>
 REPORT      worker_done once, after landing and main CI (or at READY under human-gate).
