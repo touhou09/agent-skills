@@ -77,8 +77,11 @@ VERIFY      Exact commands, or the repo's .claude/skills/verify-<app> feature to
             through `orch heavy`: the load gate refuses it exactly when the machine needs it.
             A stack that has to stay
             gets a keep reason and deadline in the reap ledger (reap-resources, compose-stack).
-            A browser check runs `orch hold browser --note "<what it checks>"` first and opens
-            the browser only once that prints held; `orch release browser` when done.
+            Each shared runtime slot SCOPE names (the host browser, a stack, a VM) is taken with
+            `orch hold <slot> --note "<what it checks>"` before its first use, used only once that
+            prints held, and given back with `orch release <slot>` when done. While another unit
+            holds it, wait for it with the same `orch hold` command in an `until` loop under
+            `run_in_background`; the lead keeps no queue of its own.
             A step on a running stack gets its address and keys from the command VERIFY names
             for them (the verify skill's helper sourced with the run id, then its variables),
             written here before the first stack command. A command never names the run's state
@@ -221,7 +224,9 @@ FORBIDDEN   Do not start other tickets. Do not file follow-ups: report each find
             verification pending; if execution or safety is uncertain, stop the affected act.
             Report leftover files for the normal card cleanup. Never `rm` a glob or a path built
             from a variable: it stops on a permission prompt, and an empty variable widens the
-            target (any other path built from one is written `${VAR:?}`). A subagent removes no
+            target (any other path built from one is written `${VAR:?}`). To reset a test fixture
+            between cases, write the next one over the same path or give each case its own
+            `mktemp -d` directory. A subagent removes no
             scratch directory: the session that owns the scratch root tears it down. A failing
             check (a git hook, linter, test or CI) is not a refusal: fix the cause and run it again.
             <repository data-sharing restrictions, applying to every reviewer and tool>
@@ -250,7 +255,8 @@ SCOPE       Its worktree and branch; the paths it may write and the paths it may
 CONTEXT     Files, PRs and links to read. The facts you already have, pasted.
 ACCEPTANCE  Checkable criteria, one per line.
 VERIFY      Exact commands, and the output that proves each criterion.
-            A browser check: `orch hold browser` before opening it, `orch release browser` after.
+            Each shared runtime slot in SCOPE (browser, stack, VM): `orch hold <slot>` before its
+            first use, `orch release <slot>` after.
 TIMEBOX     Rough cap on working time. Time spent waiting for the answer to an `ask` does not
             count, and a cap that runs out during that wait keeps the wait. Otherwise, when it
             runs out, report partial findings with --outcome failed and stop.

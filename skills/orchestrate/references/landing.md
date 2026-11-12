@@ -144,6 +144,8 @@ With no guardian running, whoever is about to record `main_red` does its read fi
 
 Workers stop at READY. `land` refuses them with exit 1, and they report. You open the gate with `orch gate <slug> --pr N`, which creates an Orca decision gate on a lead-owned Task. The user resolves it in Orca or on the dashboard. That sends no Orca message, so `orch wait` reads each pending gate every 120 s and ends with `GATE #N resolved: <resolution>` and the `orch land` line, once per gate. You then run `orch land <slug> --pr N`: it sees the resolution, records `approved`, and lands. No worker settles that `Land #N` Task, so `land` closes it: completed when the PR lands, failed when the user resolved the gate as hold or the PR was closed. Gating the PR again makes a new Task.
 
+The human resolves a batch of gates in seconds. Land that batch one PR at a time, in the order you planned: start the next `orch land` once the previous one has exited. Lands started together race for the same base, and GitHub refuses the later ones with "Base branch was modified" (exit 1); run that `orch land` once more. This is one lead running its own lands in order, not the serialized normal lane that "Two lanes" rejects.
+
 ## Permissions
 
 Merging inside `orch land` is what lets a worker land without a per-merge approval prompt. The plugin's PreToolUse hook (`hooks/guard.py`) makes the permission decisions a program needs, for every session and subagent where the plugin is enabled:
