@@ -192,7 +192,9 @@ FORBIDDEN   Touching a program's tickets, PRs or workers. Code another worker is
             verification pending; if execution or safety is uncertain, stop the affected act.
             Report leftover files for the normal card cleanup. Never `rm` a glob or a path built
             from a variable: it stops on a permission prompt, and an empty variable widens the
-            target (any other path built from one is written `${VAR:?}`). A subagent removes no
+            target (any other path built from one is written `${VAR:?}`). To reset a test fixture
+            between cases, write the next one over the same path or give each case its own
+            `mktemp -d` directory. A subagent removes no
             scratch directory: the session that owns the scratch root tears it down. A failing
             check (a git hook, linter, test or CI) is not a refusal: fix the cause and run it again.
 REPORT      One status per commit, draft PR or ticket: the sha or PR URL, the diff
