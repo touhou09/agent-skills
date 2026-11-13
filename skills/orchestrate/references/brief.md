@@ -19,6 +19,10 @@ SCOPE       Paths this unit may write and paths it may not. Its own worktree and
             every git worktree. Resolve the platform temporary root (for example TMPDIR) and
             name a task-specific directory in this SCOPE; do not assume an unset variable is a path.
             Base: origin/main | origin/feat/<topic> | stacked on #<PR> (gh stack link <lower> <this> --base main).
+            A stacked PR's base is the lower layer's branch, with or without `gh stack`; without
+            it the lead retargets the PR to main before the lower layer lands (`orchestrate`
+            `references/landing.md` "GitHub stacks"). Never a PR on main that carries the lower layer's commits: each
+            squash of that layer then changes this PR's patch-id and voids its verdict.
 CONTEXT     Ticket URL. Files and PRs to read. Upstream reports pasted in full when this
             unit depends on them. When the unit changes a subsystem no upstream report
             covers, name `how` (simple mode) for the worker; when it deletes or loosens
