@@ -2336,6 +2336,9 @@ def press_option(sync, rec, action):
             d1 = prompt_verdict(first, rec)[0]
             if not d1 or not same_dialog(d1, d):
                 return "the dialog changed between two reads (someone may be answering it)", None
+            # A request that opened since writes its own record: the same file's next Edit can look the same on screen.
+            if (prompt_records().get(handle) or {}).get("id") != rec["id"]:
+                return "a newer permission request replaced the recorded one; answer in the terminal", None
             digit = option_for(d, action)
             if not digit:
                 return ("no one-time Yes option: every Yes saves a rule or changes the mode, answer in the terminal"
