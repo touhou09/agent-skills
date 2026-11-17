@@ -1858,8 +1858,9 @@ class Fleet:
             if it.get("open"):
                 items.append(it)
         dismissed, raw_keys = mem.setdefault("dismissed", {}), {it["key"] for it in items}
+        rounds = mem.setdefault("dismissed_rounds", {})
         items = [it if it.get("project") else {**it, "project": (sessions.get(it.get("session")) or {}).get("project")}
-                 for it in items if not hidden(it, dismissed)]
+                 for it in items if not hidden(it, dismissed, rounds)]
         import tidy
         held = held_prs(read_json(state_dir() / "board.json", {}) or {}, tidy.closed(),
                         {k: e["detail"] for k, e in self.prs.items() if e.get("detail")}, now,
@@ -1885,6 +1886,7 @@ class Fleet:
             del sticky[k]
         for k in [k for k, at in dismissed.items() if at < cutoff and k not in raw_keys]:
             del dismissed[k]
+            rounds.pop(k, None)
         panes = {a["pane"] or s["id"] for s in sessions.values() for a in s["agents"]}
         for store in (prompts, phases):
             for k in [k for k in store if k not in panes]:
@@ -1977,14 +1979,15 @@ def external_items(now=None):
     """Items the orchestrator skill added with `orch-dash inbox add` (or by appending the same line), less resolved
     ones and, given now, those added more than EXTERNAL_KEEP_DAYS before it."""
     items = {}
-    for row in read_lines(state_dir() / "inbox-external.jsonl"):
+    # seq: the add's line in the append-only file, which names one round of a key that skills add again.
+    for seq, row in enumerate(read_lines(state_dir() / "inbox-external.jsonl")):
         key = f"ext:{row.get('key')}"
         if row.get("op") == "resolve":
             items.pop(key, None)
         elif row.get("op") == "add" and row.get("type"):
             items[key] = {"key": key, "type": row["type"], "session": row.get("session"), "title": mask(row.get("title"), 200),
                           "url": row.get("url"), "command": mask(row.get("command"), 500), "at": row.get("at"),
-                          "source": row.get("source") or "skill"}
+                          "source": row.get("source") or "skill", "seq": seq}
     cutoff = iso(now - dt.timedelta(days=EXTERNAL_KEEP_DAYS)) if now else ""
     return [i for i in items.values() if (i["at"] or "") >= cutoff]
 
@@ -2331,23 +2334,28 @@ def press_option(sync, rec, action):
     return None, key
 
 
-def hidden(item, dismissed):
+def hidden(item, dismissed, rounds):
     """Dismissed on the page. A skill's item (`ext:`) is hidden for the round it was dismissed in only: skills add an
-    alert again under the same key (a pressure alarm, a setup request), and one added since shows again. dismiss()
-    keeps that round's own add time, so a new add in the same second as the click still counts as new."""
+    alert again under the same key (a pressure alarm, a setup request), and one added since shows again. A round is
+    its add's seq (rounds: key -> the seq dismissed), not its time: seconds cannot tell an add, a dismiss and a new
+    add in the same second apart. A dismiss recorded before rounds existed compares add and dismiss times."""
     at = dismissed.get(item["key"])
     if at is None:
         return False
     if item["key"].startswith("ext:"):
-        added, seen = parse(item.get("at")), parse(at)
-        return not (added and seen and added > seen)
+        if item["key"] in rounds:
+            return item.get("seq", -1) <= rounds[item["key"]]
+        added, gone = parse(item.get("at")), parse(at)
+        return not (added and gone and added > gone)
     return True
 
 
 def dismiss(fleet, key):
-    shown = next((i["at"] for i in external_items() if i["key"] == key), None) if key.startswith("ext:") else None
+    seq = next((i["seq"] for i in external_items() if i["key"] == key), None) if key.startswith("ext:") else None
     with fleet.lock:
-        fleet.mem.setdefault("dismissed", {})[key] = shown or iso(utcnow())
+        fleet.mem.setdefault("dismissed", {})[key] = iso(utcnow())
+        if seq is not None:
+            fleet.mem.setdefault("dismissed_rounds", {})[key] = seq
         st = fleet.mem.get("sticky", {}).get(key)
         if st:
             st["open"] = False

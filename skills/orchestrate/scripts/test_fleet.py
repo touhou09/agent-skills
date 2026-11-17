@@ -105,9 +105,8 @@ assert ss["wt-export"]["unread"] == 3 and not items(st, "ci_failed"), (ss["wt-ex
 badges_agree(st)
 # A skill's item is dismissed for that round only: added again under the same key after the dismiss, it shows again.
 real_utcnow = fleet.utcnow
-fleet.utcnow = lambda: now - dt.timedelta(minutes=2)
+fleet.utcnow = lambda: now  # add, dismiss and the next add all in one second: a round is its add, not its time
 fleet.inbox_add("run_command", "Run the setup line", command="echo setup", key="setup:demo")
-fleet.utcnow = lambda: now
 fleet.dismiss(f, "ext:setup:demo")
 fleet.utcnow = real_utcnow
 assert "ext:setup:demo" not in {i["key"] for i in f.tick(force=True)["items"]}, "dismissed and not added again: hidden"
