@@ -612,6 +612,7 @@ assert fleet.relay_decisions(busy, runs=f.runs, post=post) == [] and len(busy.ca
 assert len(posts) == 1, posts  # its session is working: mailed, not typed
 sent = dict(zip(posts[0][2::2], posts[0][3::2]))
 assert posts[0][:2] == ("orchestration", "send") and sent["--to"] == "run:run_demo" and sent["--type"] == "question", posts
+assert sent["--from"] == "term_coord", "the server runs in no terminal: Orca needs the sender named"
 assert sent["--body"] == f"decision {mid}: Yes" and json.loads(sent["--payload"]) == {"decision": mid}, sent
 assert fleet.relay_decisions(busy, runs=f.runs, post=post) == [] and len(posts) == 1, "mailed once"
 assert fleet.decision_reopen(mid)[0] == 409, "an answer already mailed is not taken back"
@@ -627,8 +628,10 @@ world.messages.append({"id": "m_dec", "type": "question", "from_handle": None, "
                        "created_at": fleet.iso(clock[0])})
 assert "mail:m_dec" not in {i["key"] for i in f.tick(force=True)["items"]}
 world.messages.pop()
-# The mailbox its wait reads: a worker's (a lead started as one) dispatch, else the Run it coordinates, else the handle.
-assert [fleet.decision_mailbox(h, f.runs) for h in ("term_lead", "term_coord", "term_x")] == ["dispatch:ctx_lead", "run:run_demo", "term_x"]
+# The mailbox its wait reads: the Run it coordinates (a lead with its own Run that is also a worker of the root's Run
+# waits on its Run), else its dispatch (a lead started as a worker, with no Run of its own), else the handle.
+assert [fleet.decision_mailbox(h, f.runs) for h in ("term_lead", "term_coord", "term_login", "term_x")] == [
+    "run:run_lead", "run:run_demo", "dispatch:ctx_login", "term_x"]
 
 # A click on a gate option resolves it in Orca, from the server: only a gate the last read listed open, with one of its
 # own options. Resolved, it leaves Needs you on the next collect, before the next read of its Run.

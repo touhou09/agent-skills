@@ -2446,24 +2446,27 @@ RELAY_LOCK = threading.Lock()  # the page's answer and the collector's retry mus
 
 
 def decision_mailbox(handle, runs):
-    """The Orca mailbox the coordinator's wait reads: a live worker's dispatch (`orch wait` of a lead started as one
-    reads --terminal, its dispatch), else the newest Run it coordinates (`orch wait --run`, `check` of a bound
-    terminal), else the terminal handle itself."""
-    w = next((w for w in runs.get("workers") or [] if w.get("agentTerminalHandle") == handle
-              and w.get("dispatchId") and w.get("dispatchStatus") not in SETTLED), None)
-    if w:
-        return f"dispatch:{w['dispatchId']}"
+    """The Orca mailbox the coordinator's wait reads: the newest Run its terminal coordinates (`orch wait --run`,
+    `check` of a bound terminal; a lead with its own Run may also be a worker of its parent's), else its live
+    dispatch (a lead started as a worker has no Run of its own: `orch wait --terminal` reads the dispatch), else the
+    terminal handle itself."""
     mine = sorted((r for r in runs.get("runs") or [] if r.get("coordinator_handle") == handle),
                   key=lambda r: r.get("updated_at") or "")
-    return f"run:{mine[-1]['id']}" if mine else handle
+    if mine:
+        return f"run:{mine[-1]['id']}"
+    w = next((w for w in runs.get("workers") or [] if w.get("agentTerminalHandle") == handle
+              and w.get("dispatchId") and w.get("dispatchStatus") not in SETTLED), None)
+    return f"dispatch:{w['dispatchId']}" if w else handle
 
 
 def mail_decision(d, handle, runs, post=None):
     """Send the answer to the coordinator's mailbox as a `question` (the type `orch wait` wakes on) and mark it mailed.
-    The payload names the decision, so the page never lists this mail as a question for the human."""
+    The payload names the decision, so the page never lists this mail as a question for the human. Sent --from the
+    coordinator's own terminal: the server runs in none (under launchd), and Orca refuses a send whose caller it
+    cannot tell (no_active_sender_terminal)."""
     line = f"decision {d['id']}: {d.get('answer')}"
     try:
-        (post or orca)("orchestration", "send", "--to", decision_mailbox(handle, runs or {}), "--type", "question",
+        (post or orca)("orchestration", "send", "--from", handle, "--to", decision_mailbox(handle, runs or {}), "--type", "question",
                        "--subject", f"decision {d['id']} answered on the dashboard", "--body", line,
                        "--payload", json.dumps({"decision": d["id"]}))
     except SourceError:
