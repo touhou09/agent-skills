@@ -1177,7 +1177,8 @@ def render(scope="top-level", channel="terminal", now=None, headline=None, skipp
         out += ["", "⏳ 다른 사람 대기" if tg else "⏳ **다른 사람 대기**", ""] + [it if tg else f"- {it}" for it in theirs]
     if insight:
         out += ["", insight.strip()]
-    own, decisions = list(decisions), fleet.open_decisions()
+    # An answered `--observe` decision waits on its lead's check of the effect, not on the human.
+    own, decisions = list(decisions), [d for d in fleet.open_decisions() if d.get("answer") is None]
     asked = set((last or {}).get("decisions") or []) if last_rows is not None else set()
     if decisions or own:
         items = []

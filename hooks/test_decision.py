@@ -58,7 +58,12 @@ assert hook("You have 1 orchestration message. Run `orca orchestration check --r
 # `decision <id>: …` line among them: the coordinator closes it with `orch decide done` once the record shows it.
 d7 = fleet.decision_add("Approve the login", options=["done"], handle="term_coord", observe=True)["id"]
 text = hook(f"decision {d7}: done")
-assert status(d7)["status"] == "open" and f"{d7} Approve the login" in text and "once its effect shows" in text, text
+assert status(d7)["status"] == "open" and f"{d7} (Approve the login)" in text and "It stays open" in text, text
+assert "once its effect shows" in hook("how is it going?"), "the reminder marks it too"
+# A label both it and another decision have stays ambiguous: the other one is not closed in its place.
+d8 = fleet.decision_add("Ship it", options=["done"], handle="term_coord")["id"]
+assert hook("done") and status(d8)["status"] == "open" and status(d7)["status"] == "open"
+fleet.decision_close(d8, "dropped")
 fleet.decision_close(d7, "dropped")
 assert hook("anything") is None  # this terminal has nothing open: no context at all
 print("test_decision: ok")
