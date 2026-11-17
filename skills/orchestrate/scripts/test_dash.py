@@ -441,6 +441,10 @@ mixed = [{"number": 11, "state": "merged", "merged_at": ago(100), "base": "feat/
          {"number": 13, "state": "merged", "merged_at": ago(80), "base": "main", "branch": "c"}]
 assert dash.ledger_gaps(cfg_g, [{"ts": ago(100), "ev": "landed", "pr": 11, "sha": "s11"}], [], mixed, now)["landings"] == [12], \
     "a merge into another base belongs to another session"
+done_g = ev_g[:3] + [{"ts": ago(350), "ev": "predicate_verified"}]
+prs_d = [{"number": 1, "state": "merged", "merged_at": ago(400)}, {"number": 3, "state": "merged", "merged_at": ago(200)}]
+assert dash.ledger_gaps(cfg_g, done_g, [], prs_d, now)["landings"] == [], "a merge after Close's final check is not this program's"
+assert dash.ledger_gaps(cfg_g, ev_g[:3], [], prs_d, now)["landings"] == [3], "before Close it still is"
 
 # ensure: starts this store's server once, then finds it; a second serve on the store refuses.
 import socket, subprocess, signal

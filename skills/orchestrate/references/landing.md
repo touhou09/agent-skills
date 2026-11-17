@@ -8,7 +8,7 @@ This design replaced three that failed:
 - **"Whoever is ready lands next."** A migration chain waited more than five hours while eleven newer, easier PRs landed ahead of it. The priority and dependency order existed only in the lead's head.
 - **One baton, strict up-to-date branches.** Every landing put every other PR behind, which meant a rebase and another 30–40 minute CI run each. Turning off "require branches to be up to date" while keeping the required checks made landings parallel.
 
-"CI green is not a verdict." A verdict holds across a rebase only while the patch-id is unchanged.
+"CI green is not a verdict." A verdict holds across a rebase only while the patch-id is unchanged. A human's approval to merge a named head holds the same way: after `gh pr update-branch` it still holds while the patch-id is unchanged, the decision trail row names the approved head, the new head and the patch-id they share, and a changed patch-id asks the human again.
 
 ## Repository settings this assumes
 
