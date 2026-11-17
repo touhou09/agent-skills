@@ -4,9 +4,22 @@ os.environ.pop("ORCH_HEAVY_SLOT", None)  # this suite may itself run inside `orc
 
 HERE = pathlib.Path(__file__).resolve().parent
 FAKE_ORCA = r'''#!/usr/bin/env python3
-import json, os
-st = json.load(open(os.environ["FAKE_GH_STATE"]))
-print(json.dumps({"ok": True, "result": {"tasks": st.get("tasks", []), "workers": st.get("workers", [])}}))
+import json, os, sys
+path = os.environ["FAKE_GH_STATE"]
+st = json.load(open(path))
+verb = sys.argv[2:3]
+res = {"tasks": st.get("tasks", []), "workers": st.get("workers", [])}
+if verb == ["task-create"]:
+    res = {"taskId": "task_g", "status": "ready"}
+elif verb == ["gate-create"]:
+    res = {"gateId": "gate_g", "taskId": "task_g", "status": "pending"}
+    st["gates"] = [{"id": "gate_g", "task_id": "task_g", "status": "pending", "resolution": None}]
+elif verb == ["gate-list"]:
+    res = {"gates": st.get("gates", [])}
+elif verb == ["task-update"]:
+    st["task_updates"] = st.get("task_updates", []) + [sys.argv[1:]]
+json.dump(st, open(path, "w"))
+print(json.dumps({"ok": True, "result": res}))
 '''
 FAKE_GH = r'''#!/usr/bin/env python3
 import json, os, sys
@@ -647,5 +660,25 @@ assert code == 1 and "--note needs a value" in out and "Traceback" not in out, o
 code, out = prog(env, "record", "t", "spawned", "--note", "--ticket", "T-1")
 assert code == 1 and "--note needs a value" in out, out
 assert (len(ledger(d)) if led.exists() else 0) == n
+
+# An autonomous program gates one risky PR for the human: `orch gate` opens it, `land` yields until the human resolves
+# it, then records approved and lands. A PR with no gate lands at once, as before.
+d, env = setup({"50": pr(50), "51": pr(51, files=["src/other.py"])})
+verdict(d, 50, "T-50")
+verdict(d, 51, "T-51")
+code, out = prog(env, "gate", "t", "--pr", "50")
+assert code == 0 and any(e["ev"] == "gate_opened" and e["pr"] == 50 for e in ledger(d)), out
+code, out = prog(env, "land", "t", "--pr", "50")
+assert code == 2 and "gate" in out and "waiting for the user" in out, out
+assert not any(e["ev"] == "landed" and e.get("pr") == 50 for e in ledger(d))
+code, out = prog(env, "land", "t", "--pr", "51")
+assert code == 0 and "landed #51" in out, out
+st = json.loads((d / "state.json").read_text())
+st["gates"][0].update(status="resolved", resolution="land")
+(d / "state.json").write_text(json.dumps(st))
+code, out = prog(env, "land", "t", "--pr", "50")
+assert code == 0 and "landed #50" in out, out
+assert [e["ev"] for e in ledger(d) if e.get("pr") == 50][-2:] == ["approved", "landed"], ledger(d)
+assert json.loads((d / "state.json").read_text())["task_updates"][-1][3:6] == ["task_g", "--status", "completed"]
 
 print("prog.py land against fake gh: all pass")

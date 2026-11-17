@@ -1714,7 +1714,8 @@ def attempt(p, pr, klass, onto_lower=False):
         return 0, f"#{pr} already landed as {st['landed'].get('sha', '')[:8]}"
     if stopped(events):
         return 1, "STOP line active: nothing lands"
-    if cfg["merge_policy"] == "human-gate" and "approved" not in st and "gate_opened" in st:
+    # A PR with a gate open waits for the human under either policy; under autonomous only a gated PR does.
+    if "approved" not in st and "gate_opened" in st:
         resolution = gate_resolution(cfg, events, pr)
         if resolution == "land":
             p.append("approved", pr=pr, note="orca gate resolved: land")
@@ -1722,6 +1723,8 @@ def attempt(p, pr, klass, onto_lower=False):
         elif resolution:
             close_gate_task(p, pr, "failed")
             return 1, f"human-gate: the user resolved the gate as '{resolution}'"
+        else:
+            return 2, f"yield: #{pr}'s gate is open in Orca, waiting for the user"
     main = main_state(events)
     if main == "red" and klass != "main-fix":
         return 1, "safety stop: main is red; only the repair lands (--class main-fix)"
@@ -1874,7 +1877,7 @@ def cmd_land_check(argv):
             problems.append(f"patch changed since verdict ({verdict.get('patch_id', '')[:10]} -> {cur[:10]}): re-review")
         elif v["headRefOid"] != verdict.get("sha"):
             print(f"note: head moved {verdict['sha'][:8]} -> {v['headRefOid'][:8]} with the same patch-id; verdict holds, CI must pass at the new head")
-    if p.cfg["merge_policy"] == "human-gate" and "approved" not in st:
+    if (p.cfg["merge_policy"] == "human-gate" or "gate_opened" in st) and "approved" not in st:
         resolution = gate_resolution(p.cfg, events, pr)
         if resolution == "land":
             p.append("approved", pr=pr, note="orca gate resolved: land")
@@ -1932,8 +1935,7 @@ def cmd_landed(argv):
 def cmd_gate(argv):
     p = Program(argv[0])
     pr = int(opt(argv, "--pr"))
-    if p.cfg["merge_policy"] != "human-gate":
-        sys.exit("gates are for merge_policy human-gate; autonomous programs land with orch land")
+    # Under autonomous too: a PR that needs the human's approval gets a gate, and `land` waits for it (only that PR).
     if p.cfg.get("lead_dispatch"):
         sys.exit("this lead is a dispatched worker, and Orca lets no worker create a Task or gate on the Run it works "
                  "for (worker_cannot_coordinate_own_run). Ask the human with `orch decide add` per PR, or have the "
@@ -2380,8 +2382,9 @@ def on_hold(events, pr):
     return bool(marks) and marks[-1] == "parked"
 
 
-def review_sweep(events, view, active, unresolved, slug, gate=None):
-    """A review that outlasts its worker's session leaves a ready PR nobody lands."""
+def review_sweep(events, view, active, unresolved, slug, gate=None, human=True):
+    """A review that outlasts its worker's session leaves a ready PR nobody lands. gate reads a PR's gate resolution;
+    under human-gate (human) every PR needs one, under autonomous only a PR whose gate was opened waits on it."""
     ticket = pr_ticket(events)
     out, waiting = [], []
     for st in ready_prs(events):
@@ -2411,7 +2414,7 @@ def review_sweep(events, view, active, unresolved, slug, gate=None):
         threads = 0 if why else unresolved(n)
         if threads:
             why.append(f"{threads} unresolved thread(s)")
-        if not why and gate and "approved" not in st:
+        if not why and gate and "approved" not in st and (human or "gate_opened" in st):
             try:  # one unreadable gate must not cost the other PRs their lines
                 gw = gate_wait(st, gate, slug, n)
             except (SystemExit, Exception) as e:
@@ -2456,7 +2459,7 @@ def print_reviews(p):
         fields = "state,reviewDecision,mergeStateStatus,isDraft,labels,statusCheckRollup,headRefOid"
         lines = review_sweep(events, lambda n: gh_json("pr", "view", str(n), "--repo", repo, "--json", fields),
                              active - {None}, lambda n: unresolved_threads(repo, n), p.slug,
-                             (lambda n: gate_resolution(p.cfg, events, n)) if p.cfg.get("merge_policy") == "human-gate" else None)
+                             lambda n: gate_resolution(p.cfg, events, n), p.cfg.get("merge_policy") == "human-gate")
     except (SystemExit, Exception) as e:  # the batch and its ack line matter more than the sweep
         lines = [f"REVIEWS: sweep failed ({type(e).__name__}: {e}); orch status lists the ready PRs"]
     if lines:
@@ -2468,11 +2471,9 @@ GATE_SLICE_MS = 120000  # the dashboard rereads gates every 120 s (fleet.RUNS_EV
 
 def gate_news(p, failed):
     """({PR: resolution} for the open landing gates resolved and not yet reported, whether one is still pending).
-    Open: opened under human-gate, neither approved nor landed. Each gate is reported once (gates.json keeps the
+    Open: opened (under either policy), neither approved nor landed. Each gate is reported once (gates.json keeps the
     ids): a held gate, or a land `orch land` refuses before recording `approved`, stays open and would end every
     wait. An unreadable gate counts as pending and prints one line per wait (`failed`): it never ends the wait."""
-    if p.cfg.get("merge_policy") != "human-gate":
-        return {}, False
     events = p.events()
     gates = {n: st["gate_opened"].get("gate") for n, st in pr_state(events).items()
              if "gate_opened" in st and "approved" not in st and "landed" not in st}
