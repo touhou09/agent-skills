@@ -589,6 +589,46 @@ for did, verb in ((fleet.decision_add("A", handle="term_coord")["id"], "done"), 
     assert r.returncode == 0, r.stderr
 assert fleet.pending_relays() == [], fleet.pending_relays()
 world.worktrees[0]["agents"][0]["state"] = "working"
+# The answer also goes, once, to the mailbox the coordinator's `orch wait` or `orch inbox --wait` reads: those wait on
+# Orca mail, never on the terminal. It goes while the coordinator works too; typing still waits for it to be idle.
+posts = []
+post = lambda *a: posts.append(a)
+fleet.DECISION_UNDO_S = 60
+mid = fleet.decision_add("Mail it?", handle="term_coord")["id"]
+fleet.decision_answer(mid, "Yes")
+f.tick(force=True)
+assert fleet.relay_decisions(busy, runs=f.runs, post=post) == [] and posts == [], "inside the undo window nothing is mailed"
+assert fleet.decision_reopen(mid)[0] == 200 and fleet.decision_answer(mid, "Yes")[0] == 200
+fleet.DECISION_UNDO_S = 0
+
+
+def broken(*a):
+    raise fleet.SourceError("orca down")
+
+
+assert fleet.relay_decisions(busy, runs=f.runs, post=broken) == [] and not fleet.pending_relays()[0].get("mailed")
+typed_before = len(busy.calls)
+assert fleet.relay_decisions(busy, runs=f.runs, post=post) == [] and len(busy.calls) == typed_before
+assert len(posts) == 1, posts  # its session is working: mailed, not typed
+sent = dict(zip(posts[0][2::2], posts[0][3::2]))
+assert posts[0][:2] == ("orchestration", "send") and sent["--to"] == "run:run_demo" and sent["--type"] == "question", posts
+assert sent["--body"] == f"decision {mid}: Yes" and json.loads(sent["--payload"]) == {"decision": mid}, sent
+assert fleet.relay_decisions(busy, runs=f.runs, post=post) == [] and len(posts) == 1, "mailed once"
+assert fleet.decision_reopen(mid)[0] == 409, "an answer already mailed is not taken back"
+world.worktrees[0]["agents"][0]["state"] = "done"
+f.tick(force=True)
+assert fleet.relay_decisions(ok, runs=f.runs, post=post) == [mid] and ok.calls == [("term_coord", f"decision {mid}: Yes")]
+assert fleet.relay_decisions(ok, runs=f.runs, post=post) == [] and len(posts) == 1 and fleet.pending_relays() == []
+world.worktrees[0]["agents"][0]["state"] = "working"
+ok.calls.clear()
+# The mail is the coordinator's, not a question for the human: it never shows in Needs you.
+world.messages.append({"id": "m_dec", "type": "question", "from_handle": None, "to_handle": "run:run_demo", "read": False,
+                       "subject": f"decision {mid} answered", "body": sent["--body"], "payload": sent["--payload"],
+                       "created_at": fleet.iso(clock[0])})
+assert "mail:m_dec" not in {i["key"] for i in f.tick(force=True)["items"]}
+world.messages.pop()
+# The mailbox its wait reads: a worker's (a lead started as one) dispatch, else the Run it coordinates, else the handle.
+assert [fleet.decision_mailbox(h, f.runs) for h in ("term_lead", "term_coord", "term_x")] == ["dispatch:ctx_lead", "run:run_demo", "term_x"]
 
 # A click on a gate option resolves it in Orca, from the server: only a gate the last read listed open, with one of its
 # own options. Resolved, it leaves Needs you on the next collect, before the next read of its Run.
