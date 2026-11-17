@@ -72,6 +72,12 @@ fleet.change_decisions(lambda store: store["decisions"][d10].update(mailed=True)
 text = hook(f"{d10} failed")
 assert status(d10)["answer"] == "done" and "keeps the dashboard answer \"done\"" in text and "orch decide drop" in text, text
 fleet.decision_close(d10, "dropped")
+# A typed answer is masked whole before it is cut, and judged as stored: a masked first answer is not a "kept" one.
+d11 = fleet.decision_add("Rotate the key", options=["done"], handle="term_coord", observe=True)["id"]
+text = hook(f"{d11} done with PASSWORD=" + "hunter2" * 2 + " db postgres://app:" + "p" * 1890 + "@db.example.test")
+assert "It stays open" in text and "keeps the dashboard answer" not in text, text
+assert "hunter2" not in status(d11)["answer"] and "pppp" not in status(d11)["answer"], status(d11)["answer"][-80:]
+fleet.decision_close(d11, "dropped")
 fleet.decision_reopen(d7)  # not a page answer: no undo applies
 assert status(d7)["answer"] == "done"
 fleet.decision_close(d7, "dropped")

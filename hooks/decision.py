@@ -58,16 +58,16 @@ def main():
         return
     d, answer = pick(prompt, mine)
     if d and d.get("observe"):  # closed only by its coordinator's `orch decide done`, once the record shows the effect
-        kept = fleet.decision_note(d["id"], answer[:fleet.DECISION_ANSWER_MAX])
+        kept = fleet.decision_note(d["id"], answer)  # masked whole, then cut: a cut can hide a secret from the mask
         text = (f"This message answers the dashboard decision {d['id']} ({d['title']}): \"{answer[:300]}\". It stays open: "
                 f"check the record for the effect, then run `orch decide done {d['id']}`.")
-        if kept != answer[:fleet.DECISION_ANSWER_MAX]:
+        if kept != fleet.mask(answer, fleet.DECISION_ANSWER_MAX):  # compared as stored
             text = (f"This message answers the dashboard decision {d['id']} ({d['title']}) with \"{answer[:300]}\", but it "
                     f"keeps the dashboard answer \"{(kept or '')[:300]}\", which already reached you by mail. If the human "
                     f"meant this one, `orch decide drop {d['id']}` and add it again; else check the effect and run "
                     f"`orch decide done {d['id']}`.")
     elif d:
-        fleet.decision_close(d["id"], "done", answer[:fleet.DECISION_ANSWER_MAX])
+        fleet.decision_close(d["id"], "done", answer)
         text = (f"This message answers the dashboard decision {d['id']} ({d['title']}): \"{answer[:300]}\". It is now "
                 f"recorded as done (`orch decide done` is not needed); act on the answer.")
     else:
