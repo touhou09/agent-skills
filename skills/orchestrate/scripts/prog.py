@@ -2853,23 +2853,31 @@ def cmd_decide(argv):
                 sys.exit("--recommend is an option number")
             d = fleet.decision_add(opt(rest, "--title"), pathlib.Path(body).read_text() if body else "",
                                    [rest[i + 1] for i, a in enumerate(rest[:-1]) if a == "--option"],
-                                   int(rec) if rec else None, opt(rest, "--link"), os.environ.get("ORCA_TERMINAL_HANDLE"))
+                                   int(rec) if rec else None, opt(rest, "--link"), os.environ.get("ORCA_TERMINAL_HANDLE"),
+                                   "--observe" in rest)
             print(d["id"])
         elif sub == "list":
             for d in fleet.open_decisions():
+                if d.get("answer") is not None:  # an `observe` decision the human answered: yours to confirm
+                    print(f"{d['id']}  answered on the dashboard: {d['answer']}; open until its effect shows,"
+                          f" then orch decide done {d['id']}  ({d['title']})")
+                    continue
                 print(f"{d['id']}  {d['created_at']}  {d['title']}")
                 for i, o in enumerate(d["options"], 1):
                     mark = " (recommended)" if i == d.get("recommend") else ""
                     print(f"    {i}. {o['label']}{mark}" + (f" — {o['description']}" if o["description"] else ""))
             for d in fleet.pending_relays():
-                how = "mailed, not typed yet" if d.get("mailed") else "not relayed yet"
-                print(f"{d['id']}  answered on the dashboard, {how}: {d.get('answer')}  ({d['title']})")
+                if d["status"] == "done":
+                    how = "mailed, not typed yet" if d.get("mailed") else "not relayed yet"
+                    print(f"{d['id']}  answered on the dashboard, {how}: {d.get('answer')}  ({d['title']})")
         elif sub in ("done", "drop") and rest:
+            before = next((d.get("answer") for d in fleet.pending_relays() if d["id"] == rest[0]), None)
             d = fleet.decision_close(rest[0], "done" if sub == "done" else "dropped", opt(rest, "--answer"))
-            print(f"{d['id']} {d['status']}")
+            changed = before is not None and d.get("answer") != before
+            print(f"{d['id']} {d['status']}" + (f" (answer changed: {before} -> {d['answer']})" if changed else ""))
         else:
             sys.exit("usage: orch decide add --title T [--body-file F] [--option 'label::description']... [--recommend N] "
-                     "[--link URL] | list | done <id> [--answer TEXT] | drop <id>")
+                     "[--link URL] [--observe] | list | done <id> [--answer TEXT] | drop <id>")
     except (ValueError, OSError) as e:
         sys.exit(str(e))
 

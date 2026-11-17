@@ -1976,10 +1976,11 @@ def mail_dispatch(m):
 
 
 def decision_items(by_handle, root):
-    """Open decisions from `orch decide`, on the session whose terminal registered them (else the root)."""
+    """Open decisions from `orch decide`, on the session whose terminal registered them (else the root). An answered
+    `observe` decision waits on its coordinator, not on the human, so it is not listed."""
     out = []
     for d in (read_json(state_dir() / "decisions.json", {}) or {}).get("decisions", {}).values():
-        if d.get("status") != "open":
+        if d.get("status") != "open" or d.get("answer") is not None:
             continue
         sid = by_handle.get(d.get("handle"))
         out.append({"key": f"decision:{d['id']}", "type": "decision", "session": sid or root, "handle": d.get("handle") if sid else None,
@@ -2418,8 +2419,10 @@ def change_decisions(change):
         return out
 
 
-def decision_add(title, body="", options=(), recommend=None, link=None, handle=None):
-    """Register a decision; options are "label::description". The label is what the page sends back, so one line."""
+def decision_add(title, body="", options=(), recommend=None, link=None, handle=None, observe=False):
+    """Register a decision; options are "label::description". The label is what the page sends back, so one line.
+    observe: the answer reports a check or an act whose effect the system can observe; a page answer or a typed one
+    is recorded and relayed but leaves it open, and the coordinator's `done` closes it once the record shows the effect."""
     one_line = lambda v, n: mask(" ".join(v.split()), n)
     opts = []
     for o in options:
@@ -2436,7 +2439,8 @@ def decision_add(title, body="", options=(), recommend=None, link=None, handle=N
     def add(store):
         n = store.get("next", 1)
         d = {"id": f"d{n}", "title": one_line(title, 200), "body": mask(body.strip(), DECISION_BODY_MAX), "options": opts,
-             "recommend": recommend, "link": mask(link, 500), "handle": handle, "created_at": iso(now), "status": "open"}
+             "recommend": recommend, "link": mask(link, 500), "handle": handle, "created_at": iso(now), "status": "open",
+             **({"observe": True} if observe else {})}
         cutoff = iso(now - dt.timedelta(seconds=DECISION_KEEP_S))
         kept = {k: v for k, v in store.get("decisions", {}).items() if v.get("status") == "open" or (v.get("closed_at") or "") >= cutoff}
         store.update(next=n + 1, decisions={**kept, d["id"]: d})
@@ -2447,20 +2451,33 @@ def decision_add(title, body="", options=(), recommend=None, link=None, handle=N
 def decision_close(did, status, answer=None, relay=False):
     """Mark an open decision done (answered) or dropped (no longer needed). relay: answered on the page, so the answer
     still has to reach the coordinator's terminal (delivered stays False until relay_decision types it). Such a decision
-    is already done when the coordinator gets to it: its `done` then only stops the relay, and `drop` cancels it.
-    `drop` also takes back any done decision, e.g. one the prompt hook closed on a misread answer."""
+    is already done when the coordinator gets to it: its `done` then only stops the relay, or, with another answer,
+    replaces the answer (answer_was keeps the page's). An `observe` decision answered on the page stays open with the
+    answer recorded until the coordinator's `done`. `drop` also takes back any done decision, e.g. one the prompt hook
+    closed on a misread answer. A `done` with another answer on an answer already delivered fails."""
     def close(store):
         d = store.get("decisions", {}).get(did)
         if not d:
             raise ValueError(f"no decision {did}")
-        if d.get("status") == "open":
-            d.update(status=status, answer=mask(answer, DECISION_ANSWER_MAX), closed_at=iso(utcnow()))
+        answered, new = d.get("answer"), mask(answer, DECISION_ANSWER_MAX)
+        if d.get("status") == "open" and relay and d.get("observe"):
+            if answered is not None:
+                raise ValueError(f"{did} is already answered ({answered}); it stays open until its effect shows")
+            d.update(answer=new, answered_at=iso(utcnow()), delivered=False, rev=os.urandom(6).hex())
+        elif d.get("status") == "open":
+            d.update(status=status, answer=new if new is not None else answered, closed_at=iso(utcnow()))
             if relay:
                 d.update(delivered=False, rev=os.urandom(6).hex())  # names this answer for the page's undo
+            elif d.get("delivered") is False:
+                d.update(delivered=True)  # the coordinator closed it: the relay has nothing left to tell
         elif d.get("status") == "done" and d.get("delivered") is False and not relay:
+            if status == "done" and new is not None and new != answered:
+                d.update(answer=new, answer_was=answered)
             d.update(delivered=True) if status == "done" else d.update(status=status)
         elif d.get("status") == "done" and status == "dropped" and not relay:
             d.update(status=status)
+        elif d.get("status") == "done" and new is not None and new != answered:
+            raise ValueError(f"{did} is already done with the answer {answered}")
         else:
             raise ValueError(f"{did} is already {d.get('status')}")
         return d
@@ -2472,9 +2489,15 @@ def open_decisions():
 
 
 def pending_relays():
-    """Decisions answered on the page whose answer has not reached the coordinator's terminal yet."""
+    """Decisions answered on the page whose answer has not reached the coordinator's terminal yet (an `observe` one
+    stays open meanwhile)."""
     return [d for d in (read_json(state_dir() / "decisions.json", {}) or {}).get("decisions", {}).values()
-            if d.get("status") == "done" and d.get("delivered") is False]
+            if d.get("status") in ("done", "open") and d.get("delivered") is False]
+
+
+def answered_at(d):
+    """When the page recorded the answer: an `observe` decision has no closed_at yet."""
+    return d.get("closed_at") or d.get("answered_at") or ""
 
 
 def decision_target(d, state):
@@ -2567,8 +2590,9 @@ def relay_decision(did, sender=None, skip_working=False, runs=None, call=None):
 
 
 def decision_answer(did, answer):
-    """The page's answer: recorded and closed, as `orch decide done` would. relay_decisions types it into the
-    coordinator's terminal on a collect after DECISION_UNDO_S, so the page's undo (decision_reopen) can still take it back."""
+    """The page's answer: recorded and closed, as `orch decide done` would (an `observe` decision: recorded, left
+    open). relay_decisions types it into the coordinator's terminal on a collect after DECISION_UNDO_S, so the page's
+    undo (decision_reopen) can still take it back."""
     answer = " ".join((answer or "").split())
     if not answer or len(answer) > DECISION_ANSWER_MAX:
         return 400, {"ok": False, "reason": f"an answer of 1 to {DECISION_ANSWER_MAX} characters"}
@@ -2577,7 +2601,7 @@ def decision_answer(did, answer):
     except ValueError as e:
         return 409, {"ok": False, "reason": str(e)}
     # at: when it was recorded. The page's undo sends it back, and the page holds "recorded" until a snapshot after it.
-    return 200, {"ok": True, "recorded": True, "delivered": False, "at": d["closed_at"], "rev": d["rev"],
+    return 200, {"ok": True, "recorded": True, "delivered": False, "at": answered_at(d), "rev": d["rev"],
                  "line": f"decision {did}: {mask(answer, DECISION_ANSWER_MAX)}"}
 
 
@@ -2592,9 +2616,10 @@ def decision_reopen(did, rev=None):
         if rev and d.get("rev") != rev:
             raise ValueError(f"{did} was answered again since")
         sent = d.get("delivered") or d.get("mailed") or d.get("mail_request")  # a send whose outcome is unknown counts
-        if d.get("status") != "done" or d.get("delivered") is not False or sent:
+        # An answered `observe` decision is still open: delivered False marks the page's answer there too.
+        if d.get("status") not in ("done", "open") or d.get("delivered") is not False or sent:
             raise ValueError(f"{did} already reached the orchestrator or lead" if sent else f"{did} is {d.get('status')}")
-        for k in ("answer", "closed_at", "delivered", "rev"):
+        for k in ("answer", "closed_at", "answered_at", "delivered", "rev"):
             d.pop(k, None)
         d["status"] = "open"
     try:
@@ -2649,7 +2674,7 @@ def relay_decisions(sender=None, runs=None, call=None):
     try:
         sender = sender or load_sync()
         cut = iso(utcnow() - dt.timedelta(seconds=DECISION_UNDO_S))
-        return [d["id"] for d in pending_relays() if (d.get("closed_at") or "") <= cut
+        return [d["id"] for d in pending_relays() if answered_at(d) <= cut
                 and (relay_decision(d["id"], sender, skip_working=True, runs=runs, call=call) or {}).get("typed")]
     finally:
         RELAY_LOCK.release()

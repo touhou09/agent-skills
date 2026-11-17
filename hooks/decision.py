@@ -56,13 +56,15 @@ def main():
     mine = {d["id"]: d for d in fleet.open_decisions() if d.get("handle") == handle}
     if not mine or not prompt.strip():
         return
-    d, answer = pick(prompt, mine)
+    # An `observe` decision closes only on its coordinator's `orch decide done`, once the record shows the effect.
+    d, answer = pick(prompt, {k: v for k, v in mine.items() if not v.get("observe")})
     if d:
         fleet.decision_close(d["id"], "done", answer[:fleet.DECISION_ANSWER_MAX])
         text = (f"This message answers the dashboard decision {d['id']} ({d['title']}): \"{answer[:300]}\". It is now "
                 f"recorded as done (`orch decide done` is not needed); act on the answer.")
     else:
         listed = "; ".join(f"{x['id']} {x['title']}" + (f" (options: {', '.join(o['label'] for o in x['options'])})" if x.get("options") else "")
+                           + (" (close once its effect shows in the record)" if x.get("observe") else "")
                            for x in list(mine.values())[:REMIND_MAX])
         text = (f"Open dashboard decisions you registered: {listed}. If this message answers or settles one, run "
                 f"`orch decide done <id> --answer \"<answer>\"` now.")

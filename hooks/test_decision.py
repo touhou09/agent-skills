@@ -54,5 +54,11 @@ assert "orch decide done" in hook("Retry") and status(d5)["status"] == status(d6
 assert hook("d6 Retry") and status(d6)["status"] == "done" and status(d5)["status"] == "open"
 assert hook("You have 1 orchestration message. Run `orca orchestration check --run run_0FAKE`.\nd5:skip it") \
     and status(d5)["answer"] == "skip it"  # Orca's nudge typed ahead of the answer is cut out
+# A decision whose effect the system can observe (`--observe`) is not closed by a typed answer, the relayed
+# `decision <id>: …` line among them: the coordinator closes it with `orch decide done` once the record shows it.
+d7 = fleet.decision_add("Approve the login", options=["done"], handle="term_coord", observe=True)["id"]
+text = hook(f"decision {d7}: done")
+assert status(d7)["status"] == "open" and f"{d7} Approve the login" in text and "once its effect shows" in text, text
+fleet.decision_close(d7, "dropped")
 assert hook("anything") is None  # this terminal has nothing open: no context at all
 print("test_decision: ok")
