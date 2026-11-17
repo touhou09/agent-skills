@@ -35,7 +35,7 @@ if flaky.get(" ".join(a[:2])):
     flaky[" ".join(a[:2])] -= 1; save()
     sys.exit('Post "https://api.github.com/graphql": net/http: TLS handshake timeout')
 if a[:2] == ["pr", "list"]:
-    print(json.dumps([dict(p, number=int(n)) for n, p in st["prs"].items() if p["state"] == "OPEN"]))
+    print(json.dumps([dict(p, number=int(n)) for n, p in st["prs"].items() if p["state"] == "OPEN" and not p.get("unlisted")]))
 elif a[:2] == ["pr", "view"] and a[-1] == "headRefName,labels,comments":
     p = pr(a[2])
     print(json.dumps({"headRefName": f"b{a[2]}",
@@ -766,5 +766,13 @@ st["prs"]["72"].update(state="MERGED", merge_sha="m72")
 (d / "state.json").write_text(json.dumps(st))
 code, out = prog(env, "land", "t", "--pr", "73")
 assert code != 1 or "#72" not in out, out
+# One still open but missing from the open list (cut at its limit) is read on its own: its held gate still stops.
+d, env = setup({"74": dict(pr(74), unlisted=True), "75": pr(75, base="b74")}, stacks=[[74, 75]])
+verdict(d, 74, "T-74")
+verdict(d, 75, "T-75")
+assert prog(env, "gate", "t", "--pr", "74")[0] == 0
+resolve(d, "hold")
+code, out = prog(env, "land", "t", "--pr", "75")
+assert code == 1 and "#74" in out and "'hold'" in out, out
 
 print("prog.py land against fake gh: all pass")

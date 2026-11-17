@@ -1757,8 +1757,12 @@ def attempt(p, pr, klass, onto_lower=False):
         return 1, "safety stop: main is red; only the repair lands (--class main-fix)"
     rows = open_rows(repo)
     stacks = repo_stacks(repo)
-    still_open = {r["number"] for r in rows}  # a layer merged or closed meanwhile is no part of this merge
-    held = approve_gates(p, [n for n in next((m[:m.index(pr)] for m in stacks.values() if pr in m), []) if n in still_open])
+    # A layer merged or closed meanwhile is no part of this merge. The open list is cut at a limit, so a layer missing
+    # from it is read on its own before it is left out.
+    listed = {r["number"] for r in rows}
+    below = [n for n in next((m[:m.index(pr)] for m in stacks.values() if pr in m), [])
+             if n in listed or pr_view(repo, n)["state"] == "OPEN"]
+    held = approve_gates(p, below)
     for n in held:
         close_gate_task(p, n, "failed")
     if held:
