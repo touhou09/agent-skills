@@ -731,4 +731,29 @@ assert prog(env, "gate", "t", "--pr", "68")[0] == 0
 code, out = prog(env, "land", "t", "--pr", "68")
 assert code == 2 and not list((d / "programs" / "_locks").glob("*.lock")), out
 
+
+def resolve(d, res):
+    st = json.loads((d / "state.json").read_text())
+    st["gates"][0].update(status="resolved", resolution=res)
+    (d / "state.json").write_text(json.dumps(st))
+
+
+# A gate held while its PR keeps the lane: land stops for good, and the lane goes back.
+d, env = setup({"69": pr(69, files=["compose.yaml"], behind=1)})
+verdict(d, 69, "T-69")
+assert prog(env, "land", "t", "--pr", "69")[0] == 3 and list((d / "programs" / "_locks").glob("*.lock"))
+assert prog(env, "gate", "t", "--pr", "69")[0] == 0
+resolve(d, "hold")
+code, out = prog(env, "land", "t", "--pr", "69")
+assert code == 1 and "'hold'" in out and not list((d / "programs" / "_locks").glob("*.lock")), out
+# A lower stack layer's gate held: the top cannot land, says why, and the layer's Land task fails.
+d, env = setup({"70": pr(70, stacked=True), "71": pr(71, base="b70", stacked=True)}, stacks=[[70, 71]])
+verdict(d, 70, "T-70")
+verdict(d, 71, "T-71")
+assert prog(env, "gate", "t", "--pr", "70")[0] == 0
+resolve(d, "hold")
+code, out = prog(env, "land", "t", "--pr", "71")
+assert code == 1 and "#70" in out and "'hold'" in out, out
+assert json.loads((d / "state.json").read_text())["task_updates"][-1][3:6] == ["task_g", "--status", "failed"]
+
 print("prog.py land against fake gh: all pass")

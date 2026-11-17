@@ -1715,6 +1715,12 @@ def base_ci_hint(repo, base):
             f" there; start it with gh workflow run <ci workflow file> --repo {repo} --ref {base} and watch that run")
 
 
+def release_lanes(p, pr):
+    """Free any exclusive lane this program's PR holds, on whatever base: a land that stops for good keeps none."""
+    for path in (HOME / "_locks").glob(p.cfg["repo"].replace("/", "__") + "@*.lock"):
+        ExclusiveLock(p, path.stem.split("@", 1)[1].replace("__", "/")).release(pr)
+
+
 def approve_gates(p, prs):
     """Record `approved` for each of prs whose open gate the human resolved as land; {pr: resolution} of the ones
     resolved any other way. A gate still pending is left to land_order, which holds its PR."""
@@ -1743,6 +1749,7 @@ def attempt(p, pr, klass, onto_lower=False):
     held = approve_gates(p, [pr])
     if pr in held:
         close_gate_task(p, pr, "failed")
+        release_lanes(p, pr)
         return 1, f"human-gate: the user resolved the gate as '{held[pr]}'"
     events, st = p.events(), pr_state(p.events()).get(pr, {})
     main = main_state(events)
@@ -1750,7 +1757,13 @@ def attempt(p, pr, klass, onto_lower=False):
         return 1, "safety stop: main is red; only the repair lands (--class main-fix)"
     rows = open_rows(repo)
     stacks = repo_stacks(repo)
-    approve_gates(p, next((m[:m.index(pr)] for m in stacks.values() if pr in m), []))
+    held = approve_gates(p, next((m[:m.index(pr)] for m in stacks.values() if pr in m), []))
+    for n in held:
+        close_gate_task(p, n, "failed")
+    if held:
+        release_lanes(p, pr)
+        n = min(held)
+        return 1, f"human-gate: the user resolved stack layer #{n}'s gate as '{held[n]}'; its stack does not land"
     events = p.events()
     order = land_order(events, rows, cfg, dt.datetime.now(dt.timezone.utc), stacks, orca_deps(cfg["run"]))
     stacked = any(pr in members for members in stacks.values())
