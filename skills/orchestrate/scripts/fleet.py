@@ -2459,23 +2459,32 @@ def decision_mailbox(handle, runs):
     return f"dispatch:{w['dispatchId']}" if w else handle
 
 
-def mail_decision(d, handle, runs, post=None):
+def mail_decision(d, handle, runs, call=None):
     """Send the answer to the coordinator's mailbox as a `question` (the type `orch wait` wakes on) and mark it mailed.
     The payload names the decision, so the page never lists this mail as a question for the human. Sent --from the
     coordinator's own terminal: the server runs in none (under launchd), and Orca refuses a send whose caller it
-    cannot tell (no_active_sender_terminal)."""
-    line = f"decision {d['id']}: {d.get('answer')}"
+    cannot tell (no_active_sender_terminal). The Run list is read again first: the collector's copy can be two minutes
+    old, from before a `run-use`. A send whose reply was lost names its orchestrationRequestId; the next try replays it
+    with --retry-request rather than sending a second mail."""
+    call = call or orca
+    with contextlib.suppress(SourceError):
+        listed = call("orchestration", "run-list", "--full").get("runs", [])
+        runs = {**(runs or {}), "runs": [r for r in listed if not r.get("legacy") and r.get("id") != "run_legacy_local"]}
+    retry = ["--retry-request", d["mail_request"]] if d.get("mail_request") else []
     try:
-        (post or orca)("orchestration", "send", "--from", handle, "--to", decision_mailbox(handle, runs or {}), "--type", "question",
-                       "--subject", f"decision {d['id']} answered on the dashboard", "--body", line,
-                       "--payload", json.dumps({"decision": d["id"]}))
-    except SourceError:
+        call("orchestration", "send", "--from", handle, "--to", decision_mailbox(handle, runs or {}), "--type", "question",
+             "--subject", f"decision {d['id']} answered on the dashboard", "--body", f"decision {d['id']}: {d.get('answer')}",
+             "--payload", json.dumps({"decision": d["id"]}), *retry)
+    except SourceError as e:
+        rid = re.search(r"orchestrationRequestId\W+([\w-]+)", str(e))
+        if rid:
+            change_decisions(lambda store: (store.get("decisions", {}).get(d["id"]) or {}).update(mail_request=rid.group(1)))
         return False  # the next collect tries again
     change_decisions(lambda store: (store.get("decisions", {}).get(d["id"]) or {}).update(mailed=True))
     return True
 
 
-def relay_decision(did, sender=None, skip_working=False, runs=None, post=None):
+def relay_decision(did, sender=None, skip_working=False, runs=None, call=None):
     """Mail the answer to the coordinator's mailbox once, then type `decision <id>: <answer>` into its terminal through
     send()'s idle check, once. Returns send()'s body, or None when there was nothing to relay. delivered turns True
     once the line was typed, even unconfirmed: a retry could send it twice."""
@@ -2487,7 +2496,7 @@ def relay_decision(did, sender=None, skip_working=False, runs=None, post=None):
     if not session:
         return {"ok": False, "reason": "no orchestrator or lead session in the fleet state", "typed": False}
     if handle and not d.get("mailed"):
-        mail_decision(d, handle, runs, post)
+        mail_decision(d, handle, runs, call)
     if skip_working and sender is None:
         return {"ok": False, "reason": "safety check unavailable (scripts/sync.py not found)", "typed": False}
     if skip_working and target_working(session, handle):
@@ -2574,7 +2583,7 @@ def target_working(session, handle):
     return (agent or session).get("state" if agent else "phase") == "working"
 
 
-def relay_decisions(sender=None, runs=None, post=None):
+def relay_decisions(sender=None, runs=None, call=None):
     """Relay every page answer the coordinator has not received and that is past the undo window: mailed even while it
     works, typed only when idle (its title would refuse anyway). Called after each collect with the collector's Run
     read; returns the ids typed."""
@@ -2584,7 +2593,7 @@ def relay_decisions(sender=None, runs=None, post=None):
         sender = sender or load_sync()
         cut = iso(utcnow() - dt.timedelta(seconds=DECISION_UNDO_S))
         return [d["id"] for d in pending_relays() if (d.get("closed_at") or "") <= cut
-                and (relay_decision(d["id"], sender, skip_working=True, runs=runs, post=post) or {}).get("typed")]
+                and (relay_decision(d["id"], sender, skip_working=True, runs=runs, call=call) or {}).get("typed")]
     finally:
         RELAY_LOCK.release()
 
