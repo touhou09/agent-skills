@@ -95,4 +95,23 @@ assert [(e["ev"], e.get("note")) for e in events] == [("lock_acquired", None), (
     "refreshed while the group wound down for longer than the 6 s ttl, never broken"
 assert fleet_time(events[-1]["ts"]) >= mark.stat().st_mtime - 1, "released after the shell's child exited"
 
+# A refresh that fails to write (a full disk) stops refreshing; the command still runs out and the hold is released.
+sys.path.insert(0, str(PROG.parent))
+os.environ.update(PROGRAMS_HOME=str(home))
+import prog  # noqa: E402
+calls = []
+
+
+class FullDisk:
+    def hold(self, *a):
+        calls.append("hold")
+        raise OSError(28, "No space left on device")
+
+    def release(self, *a):
+        calls.append("release")
+
+
+assert prog.hold_while(FullDisk(), "browser", "term_a", 0.05, [sys.executable, "-c", "import time; time.sleep(2.5)"]) == 0
+assert calls[0] == "hold" and calls[-1] == "release" and calls.count("hold") == 1, calls
+
 print("test_holds: ok")

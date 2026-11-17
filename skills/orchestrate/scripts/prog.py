@@ -3103,7 +3103,7 @@ def hold_while(holds, target, by, ttl, cmd):
         if refresh[0]:
             try:
                 holds.hold(target, by, None, ttl)
-            except ValueError as e:  # someone took it with --force: stop refreshing, let the command finish
+            except (ValueError, OSError) as e:  # taken with --force, or unwritable: stop refreshing, let it finish
                 print(f"hold: lost {target}: {e}", file=sys.stderr, flush=True)
                 refresh[0] = False
 
@@ -3138,7 +3138,7 @@ def hold_while(holds, target, by, ttl, cmd):
                 keep()
                 last = time.monotonic()
             time.sleep(0.2)
-        with contextlib.suppress(ValueError):
+        with contextlib.suppress(ValueError, OSError):  # the handlers are restored whatever the release does
             holds.release(target, by)
         for s, h in old.items():
             signal.signal(s, h)
