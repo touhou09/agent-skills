@@ -1048,10 +1048,27 @@ def parse_dialog(lines):
             return None
     if not options:
         return None
+    # No rule: a dialog taller than the screen scrolled its top off, so request and lines start at the screen's top.
     top = max((i for i in range(q) if RULE_RE.fullmatch(body[i])), default=-1)
     return {"question": body[q], "request": [l for l in body[top + 1:q] if l], "lines": body[top + 1:],
+            "ruled": top >= 0,
             # "Yes, and switch to auto mode · auto mode handles these prompts for you": the label is before " · "
             "options": [(d, label.split(" · ")[0].strip()) for d, label in options]}
+
+
+BLINK_RE = re.compile(r"^⏺\s*")  # the pending tool's bullet, drawn and erased between reads (measured)
+
+
+def same_dialog(a, b):
+    """Whether two reads show one dialog unchanged. With its top rule on screen in both, the dialog is compared whole.
+    With it scrolled off in both, nothing marks where the dialog starts, so every line on screen is compared, the
+    request included; only the screen's top line, where the pending tool's bullet sits above the dialog, may differ by
+    a leading ⏺. A rule in one read only means the screen moved: refused. The caller also checks each read against
+    the record."""
+    if a["ruled"] or b["ruled"]:
+        return a == b
+    top = lambda d: [BLINK_RE.sub("", d["lines"][0])] + d["lines"][1:] if d["lines"] else []
+    return top(a) == top(b)
 
 
 def prompt_needles(rec):
@@ -2316,9 +2333,14 @@ def press_option(sync, rec, action):
             d, why = prompt_verdict(second, rec)
             if not d:
                 return why, None
-            # Only the dialog is compared: above it the pending tool's ⏺ blinks between reads (measured).
-            if d != parse_dialog(first):
+            # Only the dialog is compared: above it the pending tool's ⏺ blinks between reads (measured). Both reads
+            # must show the recorded request, since a dialog with no rule on screen is compared from its question down.
+            d1 = prompt_verdict(first, rec)[0]
+            if not d1 or not same_dialog(d1, d):
                 return "the dialog changed between two reads (someone may be answering it)", None
+            # A request that opened since writes its own record: the same file's next Edit can look the same on screen.
+            if (prompt_records().get(handle) or {}).get("id") != rec["id"]:
+                return "the recorded permission request was replaced or answered; answer in the terminal", None
             digit = option_for(d, action)
             if not digit:
                 return ("no one-time Yes option: every Yes saves a rule or changes the mode, answer in the terminal"

