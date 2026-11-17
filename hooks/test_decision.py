@@ -65,6 +65,13 @@ fleet.decision_answer(d9, "done")  # a page answer still waiting for its relay
 assert hook(f"{d9} failed") and status(d9)["answer"] == "failed", "a typed correction replaces it"
 assert fleet.pending_relays() == [] and fleet.decision_reopen(d9)[0] == 409, "the coordinator has it: no relay, no undo"
 fleet.decision_close(d9, "dropped")
+# A page answer that already went out by mail stays; the context says so instead of claiming the typed one counts.
+d10 = fleet.decision_add("Restart the cache", options=["done", "failed"], handle="term_coord", observe=True)["id"]
+fleet.decision_answer(d10, "done")
+fleet.change_decisions(lambda store: store["decisions"][d10].update(mailed=True))
+text = hook(f"{d10} failed")
+assert status(d10)["answer"] == "done" and "keeps the dashboard answer \"done\"" in text and "orch decide drop" in text, text
+fleet.decision_close(d10, "dropped")
 fleet.decision_reopen(d7)  # not a page answer: no undo applies
 assert status(d7)["answer"] == "done"
 fleet.decision_close(d7, "dropped")

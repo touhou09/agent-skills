@@ -2492,12 +2492,14 @@ def decision_close(did, status, answer=None, relay=False):
 def decision_note(did, answer):
     """A typed answer to an open `observe` decision: recorded, not relayed (it came from the coordinator's own
     terminal), and the decision stays open for its `done`. It replaces a page answer not sent yet, and marks the
-    answer delivered, so no relay or undo follows; a page answer already mailed is kept, as the coordinator read it."""
+    answer delivered, so no relay or undo follows; a page answer already mailed is kept, as the coordinator read it.
+    Returns the answer the decision now records."""
     def note(store):
         d = store.get("decisions", {}).get(did) or {}
         if d.get("status") == "open" and d.get("observe") and not (d.get("mailed") or d.get("mail_request")):
             d.update(answer=mask(answer, DECISION_ANSWER_MAX), answered_at=iso(utcnow()), delivered=True)
-    change_decisions(note)
+        return d.get("answer")
+    return change_decisions(note)
 
 
 def open_decisions():
