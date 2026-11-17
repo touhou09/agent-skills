@@ -671,6 +671,12 @@ assert "- └ ❔ ask 누구 대기 — 확인 필요: 누구 대기인지 기�
 assert not any(w in l for l in mine + moving for w in ("남 리뷰", "디자인 답변")), (mine, moving)
 assert not any(w in l for l in theirs + moving for w in ("내 리뷰", "캐시 정책")) and "누구 대기" not in "".join(mine + theirs)
 assert "❓ **결정 필요** — 1. (d1) 캐시 정책 → 추천: TTL 1h" in text and "캐시 정책" not in "".join(mine), text
+# An `--observe` decision the human already answered waits on its lead's check of the effect, not on the human.
+wok("decide", "add", "--title", "로그인 승인", "--option", "done", "--observe")
+kept_state, os.environ["ORCH_FLEET_STATE"] = os.environ.get("ORCH_FLEET_STATE"), wenv["ORCH_FLEET_STATE"]
+assert fleet.decision_answer("d2", "done")[0] == 200
+os.environ["ORCH_FLEET_STATE"] = kept_state
+assert "로그인 승인" not in wok("brief", "render", "--periodic", "--now", NOW)
 # Without the owner's gh login a requested review could be anyone's: 확인 필요, not someone else's.
 del who_prs["me"]
 (wd / "dashboard" / "prs.json").write_text(json.dumps(who_prs))

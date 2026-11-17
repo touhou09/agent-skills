@@ -731,6 +731,58 @@ except fleet.SourceError as e:
     assert str(e).startswith("orchestrationRequestId req_LONG"), e
 fleet.run_json = real_run_json
 
+
+def decide(*args):
+    r = subprocess.run([sys.executable, str(pathlib.Path(__file__).parent / "prog.py"), "decide", *args],
+                       capture_output=True, text=True, env={**env, "ORCH_FLEET_STATE": str(state_dir)})
+    return r.returncode, r.stdout.strip(), r.stderr.strip()
+
+
+# A decision whose effect the system can observe (`--observe`): a button records the answer and leaves it open, the
+# answer is relayed as usual, and only the coordinator's `done`, once the record shows the effect, closes it.
+code, obs, _ = decide("add", "--title", "Approve the login", "--option", "done::approved on the phone", "--observe")
+assert code == 0 and fleet.decision_answer(obs, "done")[0] == 200
+saved = json.loads((state_dir / "decisions.json").read_text())["decisions"][obs]
+assert saved["observe"] and saved["status"] == "open" and saved["answer"] == "done" and saved["delivered"] is False, saved
+assert obs not in {i["decision"] for i in items(f.tick(force=True), "decision")}, "answered: no longer the human's to do"
+assert fleet.decision_answer(obs, "done")[0] == 409, "answered once"
+assert fleet.decision_reopen(obs, saved["rev"])[0] == 200 and "answer" not in fleet.open_decisions()[-1]  # undo still works
+assert obs in {i["decision"] for i in items(f.tick(force=True), "decision")} and fleet.decision_answer(obs, "done")[0] == 200
+world.worktrees[0]["agents"][0]["state"] = "done"
+f.tick(force=True)
+posts.clear()
+assert fleet.relay_decisions(ok, runs=f.runs, call=orca_call) == [obs] and ok.calls == [("term_coord", f"decision {obs}: done")]
+assert len(posts) == 1 and obs in [d["id"] for d in fleet.open_decisions()], "relayed, and still open"
+world.worktrees[0]["agents"][0]["state"] = "working"
+ok.calls.clear()
+assert f"{obs}  answered on the dashboard: done; open until its effect shows" in decide("list")[1]
+code, _, err = decide("done", obs, "--answer", "not yet")
+assert code == 1 and err == f"{obs} is already answered with done, and that answer reached the coordinator", err
+assert decide("done", obs) == (0, f"{obs} done", "")
+saved = json.loads((state_dir / "decisions.json").read_text())["decisions"][obs]
+assert saved["status"] == "done" and saved["answer"] == "done", saved
+# A `done` with another answer on a decision the page already closed changes the answer and says so; on one whose
+# answer already reached the coordinator it fails. Neither is silently ignored.
+fleet.DECISION_UNDO_S = 60
+mixed = fleet.decision_add("CSV or JSON?", options=["CSV", "JSON"], handle="term_coord")["id"]
+fleet.decision_answer(mixed, "CSV")
+assert decide("done", mixed, "--answer", "JSON") == (0, f"{mixed} done (answer changed: CSV -> JSON)", "")
+saved = json.loads((state_dir / "decisions.json").read_text())["decisions"][mixed]
+assert saved["answer"] == "JSON" and saved["delivered"] is True and fleet.pending_relays() == [], saved
+code, _, err = decide("done", mixed, "--answer", "CSV")
+assert code == 1 and err == f"{mixed} is already done with the answer JSON", err
+assert decide("done", mixed, "--answer", "JSON")[0] == 1  # done twice is still refused, as before
+# An answer that already went out by mail is not replaced either: the coordinator's wait read the page's answer.
+fleet.DECISION_UNDO_S = 60
+mailed_one = fleet.decision_add("Mail or type?", options=["A", "B"], handle="term_coord")["id"]
+fleet.decision_answer(mailed_one, "A")
+fleet.DECISION_UNDO_S = 0
+assert fleet.relay_decisions(busy, runs=f.runs, call=orca_call) == [] and fleet.pending_relays()[-1]["mailed"] is True
+code, _, err = decide("done", mailed_one, "--answer", "B")
+assert code == 1 and err == f"{mailed_one} is already done with the answer A", err
+assert decide("done", mailed_one) == (0, f"{mailed_one} done", "")
+fleet.DECISION_UNDO_S = 0
+
 # A click on a gate option resolves it in Orca, from the server: only a gate the last read listed open, with one of its
 # own options. Resolved, it leaves Needs you on the next collect, before the next read of its Run.
 calls, real_orca = [], fleet.orca

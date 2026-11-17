@@ -54,5 +54,39 @@ assert "orch decide done" in hook("Retry") and status(d5)["status"] == status(d6
 assert hook("d6 Retry") and status(d6)["status"] == "done" and status(d5)["status"] == "open"
 assert hook("You have 1 orchestration message. Run `orca orchestration check --run run_0FAKE`.\nd5:skip it") \
     and status(d5)["answer"] == "skip it"  # Orca's nudge typed ahead of the answer is cut out
+# A decision whose effect the system can observe (`--observe`) is not closed by a typed answer, the relayed
+# `decision <id>: …` line among them: the coordinator closes it with `orch decide done` once the record shows it.
+d7 = fleet.decision_add("Approve the login", options=["done"], handle="term_coord", observe=True)["id"]
+text = hook(f"decision {d7}: done")
+assert status(d7)["status"] == "open" and f"{d7} (Approve the login)" in text and "It stays open" in text, text
+assert status(d7)["answer"] == "done", "the answer is recorded, so nobody asks the human again"
+d9 = fleet.decision_add("Restart the service", options=["done", "failed"], handle="term_coord", observe=True)["id"]
+fleet.decision_answer(d9, "done")  # a page answer still waiting for its relay
+assert hook(f"{d9} failed") and status(d9)["answer"] == "failed", "a typed correction replaces it"
+assert fleet.pending_relays() == [] and fleet.decision_reopen(d9)[0] == 409, "the coordinator has it: no relay, no undo"
+fleet.decision_close(d9, "dropped")
+# A page answer that already went out by mail stays; the context says so instead of claiming the typed one counts.
+d10 = fleet.decision_add("Restart the cache", options=["done", "failed"], handle="term_coord", observe=True)["id"]
+fleet.decision_answer(d10, "done")
+fleet.change_decisions(lambda store: store["decisions"][d10].update(mailed=True))
+text = hook(f"{d10} failed")
+assert status(d10)["answer"] == "done" and "keeps the dashboard answer \"done\"" in text and "orch decide drop" in text, text
+fleet.decision_close(d10, "dropped")
+# A typed answer is masked whole before it is cut, and judged as stored: a masked first answer is not a "kept" one.
+d11 = fleet.decision_add("Rotate the key", options=["done"], handle="term_coord", observe=True)["id"]
+text = hook(f"{d11} done with PASSWORD=" + "hunter2" * 2 + " db postgres://app:" + "p" * 1890 + "@db.example.test")
+assert "It stays open" in text and "keeps the dashboard answer" not in text, text
+assert "hunter2" not in status(d11)["answer"] and "pppp" not in status(d11)["answer"], status(d11)["answer"][-80:]
+fleet.decision_close(d11, "dropped")
+fleet.decision_reopen(d7)  # not a page answer: no undo applies
+assert status(d7)["answer"] == "done"
+fleet.decision_close(d7, "dropped")
+d7 = fleet.decision_add("Approve the login", options=["done"], handle="term_coord", observe=True)["id"]
+assert "once its effect shows" in hook("how is it going?"), "the reminder marks it too"
+# A label both it and another decision have stays ambiguous: the other one is not closed in its place.
+d8 = fleet.decision_add("Ship it", options=["done"], handle="term_coord")["id"]
+assert hook("done") and status(d8)["status"] == "open" and status(d7)["status"] == "open"
+fleet.decision_close(d8, "dropped")
+fleet.decision_close(d7, "dropped")
 assert hook("anything") is None  # this terminal has nothing open: no context at all
 print("test_decision: ok")
