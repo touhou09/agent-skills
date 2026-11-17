@@ -79,6 +79,11 @@ VERIFY      Exact commands, or the repo's .claude/skills/verify-<app> feature to
             networks outside compose that `compose down` leaves), else `docker compose -p
             <project> down`; either way keep volumes (never `-v`). Teardown runs bare, never
             through `orch heavy`: the load gate refuses it exactly when the machine needs it.
+            `orch heavy` holds its slot only while the command runs, so a stack that stays up
+            after its start command returns (`up -d`) is held with `orch hold heavy-stack --ttl
+            <minutes it stays up> --note "<what it checks>"` from before it starts until it is
+            down, and held again before that ttl runs out if it stays longer: one such stack runs
+            on the machine at a time.
             A stack that has to stay
             gets a keep reason and deadline in the reap ledger (reap-resources, compose-stack).
             Each shared runtime slot SCOPE names (the host browser, a stack, a VM) is taken with
@@ -147,7 +152,10 @@ FORBIDDEN   Do not start other tickets. Do not file follow-ups: report each find
             VERIFY names (`--write`, `--fix`) is a tool run, not a hand edit. Give each Bash act
             that changes a file or its mode its own call, so a refusal names it. Never chain a
             check or probe with other acts in one Bash call either: a refusal takes every act in
-            the call with it, and each of them then counts as refused. Hooks match the whole
+            the call with it, and each of them then counts as refused. Read-only commands too run
+            one per call, a grep alternation is written `-E 'a|b'`, and no pattern holds `${`:
+            Claude Code cannot confirm that a chained or escaped command only reads, and stops it
+            on a permission prompt nobody answers. Hooks match the whole
             command text, so text a hook may read as a command (a prompt for another agent CLI,
             a hook's test inputs) goes in a file written with the Write tool and passed on stdin
             (`codex exec - < prompt.md`) or named in a short inline line that says to read it;
