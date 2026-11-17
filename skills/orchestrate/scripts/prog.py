@@ -3083,15 +3083,22 @@ def fleet_parse(s):
 
 def hold_while(holds, target, by, ttl, cmd):
     """Run cmd while holding target, refreshing the hold every third of its ttl so a use longer than the ttl is never
-    broken under it; released when cmd ends, however it ends. A stop signal to this wrapper (INT, TERM, HUP) goes to
-    cmd, and the hold is released only once cmd has exited. Returns cmd's exit code."""
-    refresh, proc, old = True, None, {}
+    broken under it; released when cmd ends, however it ends. cmd runs in its own process group: a stop signal to this
+    wrapper (INT, TERM, HUP) goes to the whole group, and the hold is released only once every process in it has
+    exited (a shell's children too). Returns cmd's exit code, 128 + the signal when a signal ended it."""
+    refresh, proc, old, stopped = True, None, {}, []
+
+    def stop(sig, _):
+        stopped.append(sig)
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, sig)
     try:
-        proc = subprocess.Popen(cmd)
-        old = {s: signal.signal(s, lambda sig, _: proc.send_signal(sig)) for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
+        proc = subprocess.Popen(cmd, start_new_session=True)
+        old = {s: signal.signal(s, stop) for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
         while True:
             try:
-                return proc.wait(timeout=ttl * 20)  # a third of the ttl, in seconds
+                code = proc.wait(timeout=ttl * 20)  # a third of the ttl, in seconds
+                return 128 - code if code < 0 else code
             except subprocess.TimeoutExpired:
                 if refresh:
                     try:
@@ -3103,8 +3110,22 @@ def hold_while(holds, target, by, ttl, cmd):
         for s, h in old.items():
             signal.signal(s, h)
         if proc and proc.poll() is None:  # an error in this loop, not the command's end: stop it before releasing
-            proc.terminate()
+            stopped.append(signal.SIGTERM)
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGTERM)
             proc.wait()
+        # Stopped: the group's other processes may still be at work. Wait for them (killed after 60 s), then release.
+        # A command that ended by itself may leave processes on purpose; those are its business, not the hold's.
+        for _ in range(300 if stopped and proc else 0):
+            try:
+                os.killpg(proc.pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.2)
+        else:
+            if stopped and proc:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(proc.pid, signal.SIGKILL)
         with contextlib.suppress(ValueError):
             holds.release(target, by)
 

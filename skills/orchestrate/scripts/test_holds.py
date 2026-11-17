@@ -72,19 +72,20 @@ assert [(e["ev"], e.get("note")) for e in events] == [("lock_acquired", None), (
 assert not (locks / "res__browser.lock").exists()
 assert orch("hold", "browser", "--", sys.executable, "-c", "raise SystemExit(3)")[0] == 3
 assert not (locks / "res__browser.lock").exists(), "released when the command fails too"
-# Stopping the wrapper stops the command first: the signal goes to it, and the hold is released only once it has
-# exited, never while it still uses the resource.
+# Stopping the wrapper stops the command first: the signal goes to its whole process group (a shell's children too),
+# and the hold is released only once every one of them has exited, never while one still uses the resource. A command
+# a signal ended exits 128 + the signal, as a shell reports it.
 mark = home / "stopped"
-child = ("import pathlib, signal, sys, time\n"
-         f"def stop(*_): time.sleep(1); pathlib.Path({str(mark)!r}).write_text('x'); sys.exit(0)\n"
-         "signal.signal(signal.SIGTERM, stop)\ntime.sleep(30)\n")
-proc = subprocess.Popen([sys.executable, str(PROG), "hold", "browser", "--", sys.executable, "-c", child],
-                        env=env, stdout=subprocess.PIPE, text=True)
+worker = ("import pathlib, signal, sys, time\n"
+          f"def stop(*_): time.sleep(2); pathlib.Path({str(mark)!r}).write_text('x'); sys.exit(0)\n"
+          "signal.signal(signal.SIGTERM, stop)\ntime.sleep(30)\n")
+proc = subprocess.Popen([sys.executable, str(PROG), "hold", "browser", "--", "sh", "-c", '"$0" -c "$1" & wait',
+                         sys.executable, worker], env=env, stdout=subprocess.PIPE, text=True)
 assert proc.stdout.readline().startswith("browser held by term_a")
-time.sleep(0.5)
+time.sleep(1)
 proc.terminate()
-assert proc.wait(timeout=10) == 0 and mark.exists() and not (locks / "res__browser.lock").exists()
+assert proc.wait(timeout=20) == 143 and mark.exists() and not (locks / "res__browser.lock").exists()
 released = fleet_time(json.loads((locks / "holds.jsonl").read_text().splitlines()[-1])["ts"])
-assert released >= mark.stat().st_mtime - 1, "released after the command exited"
+assert released >= mark.stat().st_mtime - 1, "released after the shell's child exited, not when the shell did"
 
 print("test_holds: ok")
