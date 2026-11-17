@@ -2472,6 +2472,8 @@ def decision_close(did, status, answer=None, relay=False):
                 d.update(delivered=True)  # the coordinator closed it: the relay has nothing left to tell
         elif d.get("status") == "done" and d.get("delivered") is False and not relay:
             if status == "done" and new is not None and new != answered:
+                if d.get("mailed") or d.get("mail_request"):  # the coordinator's wait already read the page's answer
+                    raise ValueError(f"{did} is already done with the answer {answered}")
                 d.update(answer=new, answer_was=answered)
             d.update(delivered=True) if status == "done" else d.update(status=status)
         elif d.get("status") == "done" and status == "dropped" and not relay:
@@ -2482,6 +2484,16 @@ def decision_close(did, status, answer=None, relay=False):
             raise ValueError(f"{did} is already {d.get('status')}")
         return d
     return change_decisions(close)
+
+
+def decision_note(did, answer):
+    """A typed answer to an open `observe` decision: recorded, not relayed (it came from the coordinator's own
+    terminal), and the decision stays open for its `done`."""
+    def note(store):
+        d = store.get("decisions", {}).get(did) or {}
+        if d.get("status") == "open" and d.get("observe") and d.get("answer") is None:
+            d.update(answer=mask(answer, DECISION_ANSWER_MAX), answered_at=iso(utcnow()))
+    change_decisions(note)
 
 
 def open_decisions():

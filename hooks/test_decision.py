@@ -59,6 +59,11 @@ assert hook("You have 1 orchestration message. Run `orca orchestration check --r
 d7 = fleet.decision_add("Approve the login", options=["done"], handle="term_coord", observe=True)["id"]
 text = hook(f"decision {d7}: done")
 assert status(d7)["status"] == "open" and f"{d7} (Approve the login)" in text and "It stays open" in text, text
+assert status(d7)["answer"] == "done", "the answer is recorded, so nobody asks the human again"
+fleet.decision_reopen(d7)  # not a page answer: no undo applies
+assert status(d7)["answer"] == "done"
+fleet.decision_close(d7, "dropped")
+d7 = fleet.decision_add("Approve the login", options=["done"], handle="term_coord", observe=True)["id"]
 assert "once its effect shows" in hook("how is it going?"), "the reminder marks it too"
 # A label both it and another decision have stays ambiguous: the other one is not closed in its place.
 d8 = fleet.decision_add("Ship it", options=["done"], handle="term_coord")["id"]

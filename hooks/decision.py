@@ -58,6 +58,7 @@ def main():
         return
     d, answer = pick(prompt, mine)
     if d and d.get("observe"):  # closed only by its coordinator's `orch decide done`, once the record shows the effect
+        fleet.decision_note(d["id"], answer)
         text = (f"This message answers the dashboard decision {d['id']} ({d['title']}): \"{answer[:300]}\". It stays open: "
                 f"check the record for the effect, then run `orch decide done {d['id']}`.")
     elif d:

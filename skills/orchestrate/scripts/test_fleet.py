@@ -770,6 +770,15 @@ assert saved["answer"] == "JSON" and saved["delivered"] is True and fleet.pendin
 code, _, err = decide("done", mixed, "--answer", "CSV")
 assert code == 1 and err == f"{mixed} is already done with the answer JSON", err
 assert decide("done", mixed, "--answer", "JSON")[0] == 1  # done twice is still refused, as before
+# An answer that already went out by mail is not replaced either: the coordinator's wait read the page's answer.
+fleet.DECISION_UNDO_S = 60
+mailed_one = fleet.decision_add("Mail or type?", options=["A", "B"], handle="term_coord")["id"]
+fleet.decision_answer(mailed_one, "A")
+fleet.DECISION_UNDO_S = 0
+assert fleet.relay_decisions(busy, runs=f.runs, call=orca_call) == [] and fleet.pending_relays()[-1]["mailed"] is True
+code, _, err = decide("done", mailed_one, "--answer", "B")
+assert code == 1 and err == f"{mailed_one} is already done with the answer A", err
+assert decide("done", mailed_one) == (0, f"{mailed_one} done", "")
 fleet.DECISION_UNDO_S = 0
 
 # A click on a gate option resolves it in Orca, from the server: only a gate the last read listed open, with one of its
