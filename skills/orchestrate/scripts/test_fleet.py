@@ -437,7 +437,7 @@ arm(bash_rec)
 fs = FakeSync(["  Creating out.txt"] + BASH, ["⏺ Creating out.txt"] + BASH, IDLE)
 assert fleet.answer_prompt("wt-docs", "p-bash", "approve", sender=fs)[1]["ok"] and fs.sent[0][-1] == "1"
 # A dialog taller than the screen has its top rule scrolled off, so nothing marks where it starts: every line on
-# screen is compared, the request included, with only a line's leading blinking ⏺ dropped, and both reads must show
+# screen is compared, the request included, with only the top line's leading blinking ⏺ dropped, and both reads must show
 # the recorded request.
 TALL = BASH[1:]
 arm(bash_rec)
@@ -456,6 +456,8 @@ refusals = [  # (screens, action, reason): nothing is pressed
     ((OTHER, TALL), "approve", "the dialog changed between two reads (someone may be answering it)"),
     ((TALL, LONGER), "approve", "the dialog changed between two reads (someone may be answering it)"),
     ((BASH, TALL), "approve", "the dialog changed between two reads (someone may be answering it)"),
+    ((TALL, [("⏺ " + l.strip()) if "Create out.txt" in l else l for l in TALL]), "approve",  # a ⏺ below the top line
+     "the dialog changed between two reads (someone may be answering it)"),
     (([],), "deny", "not a connected, writable Claude terminal"),
 ]
 for screens, action, reason in refusals:
@@ -495,7 +497,7 @@ assert fleet.answer_prompt("wt-docs", "p-bash", "open") == (200, {"ok": True, "r
 fleet.orca = real_orca
 assert opened == [("terminal", "switch", "--terminal", "term_docs")]
 rows = [json.loads(l) for l in (state_dir / "sends.jsonl").read_text().splitlines()[8:]]
-assert len(rows) == 21 and all(r["text"].startswith("prompt ") and "code" in r for r in rows), rows
+assert len(rows) == 22 and all(r["text"].startswith("prompt ") and "code" in r for r in rows), rows
 
 # Adoption: a dry run by default, a write only with the config flag, and undo restores the logged previous value.
 calls = []

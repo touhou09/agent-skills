@@ -1062,11 +1062,13 @@ BLINK_RE = re.compile(r"^⏺\s*")  # the pending tool's bullet, drawn and erased
 def same_dialog(a, b):
     """Whether two reads show one dialog unchanged. With its top rule on screen in both, the dialog is compared whole.
     With it scrolled off in both, nothing marks where the dialog starts, so every line on screen is compared, the
-    request included, with only a leading blinking ⏺ dropped. A rule in one read only means the screen moved: refused.
-    The caller also checks each read against the record."""
+    request included; only the screen's top line, where the pending tool's bullet sits above the dialog, may differ by
+    a leading ⏺. A rule in one read only means the screen moved: refused. The caller also checks each read against
+    the record."""
     if a["ruled"] or b["ruled"]:
         return a == b
-    return [BLINK_RE.sub("", l) for l in a["lines"]] == [BLINK_RE.sub("", l) for l in b["lines"]]
+    top = lambda d: [BLINK_RE.sub("", d["lines"][0])] + d["lines"][1:] if d["lines"] else []
+    return top(a) == top(b)
 
 
 def prompt_needles(rec):
