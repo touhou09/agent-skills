@@ -660,6 +660,10 @@ def land_order(events, rows, cfg, when, stacks=None, deps=None):
         state, reasons = row_state(rows.get(pr), s.get("verdict"))
         if on_hold(events, pr) and state != "gone":
             state, reasons = "blocked", ["on hold"] + reasons
+        # Gated and not approved (attempt records `approved` once the human resolves it as land): it waits, so it
+        # holds no exclusive lane and the top of its stack does not merge it.
+        if "gate_opened" in s and "approved" not in s and state != "gone":
+            state, reasons = "waiting", [f"#{pr}'s gate is open in Orca, waiting for the user"] + reasons
         live = stack_of.get(pr, [])
         below_t = {tickets.get(b) for b in live[:live.index(pr)]} if live else set()
         waits = sorted(b for b in after.get(ticket, ()) if b not in landed_t | below_t)
@@ -683,6 +687,11 @@ def land_order(events, rows, cfg, when, stacks=None, deps=None):
             if any(u and own[u["pr"]] not in ("blocked", "gone") for u in upper):
                 top = max(u["pr"] for u in upper if u and own[u["pr"]] not in ("blocked", "gone"))
                 e["state"], e["reasons"] = "waiting", [f"lands with its stack from #{top}"] + e["reasons"]
+                continue
+            # A lower layer waiting (on its gate, on a dependency) holds the whole unit: waiting, so it takes no lane.
+            held = [b for b in live[:i] if own.get(b) == "waiting"]
+            if held and e["state"] not in ("blocked", "gone"):
+                e["state"], e["reasons"] = "waiting", [f"stack layer #{held[0]} is waiting"] + e["reasons"]
                 continue
             unready = [f"#{b} {own.get(b, 'not in the program')}" for b in live[:i] if own.get(b) != "ready"]
             if unready and e["state"] == "ready":
@@ -1706,6 +1715,27 @@ def base_ci_hint(repo, base):
             f" there; start it with gh workflow run <ci workflow file> --repo {repo} --ref {base} and watch that run")
 
 
+def release_lanes(p, pr):
+    """Free any exclusive lane this program's PR holds, on whatever base: a land that stops for good keeps none."""
+    for path in (HOME / "_locks").glob(p.cfg["repo"].replace("/", "__") + "@*.lock"):
+        ExclusiveLock(p, path.stem.split("@", 1)[1].replace("__", "/")).release(pr)
+
+
+def approve_gates(p, prs):
+    """Record `approved` for each of prs whose open gate the human resolved as land; {pr: resolution} of the ones
+    resolved any other way. A gate still pending is left to land_order, which holds its PR."""
+    events, held = p.events(), {}
+    for n in prs:
+        s = pr_state(events).get(n, {})
+        if "gate_opened" in s and not {"approved", "landed"} & s.keys():
+            res = gate_resolution(p.cfg, events, n)
+            if res == "land":
+                p.append("approved", pr=n, note="orca gate resolved: land")
+            elif res:
+                held[n] = res
+    return held
+
+
 def attempt(p, pr, klass, onto_lower=False):
     """One pass: returns (exit_code, message)."""
     events, cfg, repo = p.events(), p.cfg, p.cfg["repo"]
@@ -1714,19 +1744,32 @@ def attempt(p, pr, klass, onto_lower=False):
         return 0, f"#{pr} already landed as {st['landed'].get('sha', '')[:8]}"
     if stopped(events):
         return 1, "STOP line active: nothing lands"
-    if cfg["merge_policy"] == "human-gate" and "approved" not in st and "gate_opened" in st:
-        resolution = gate_resolution(cfg, events, pr)
-        if resolution == "land":
-            p.append("approved", pr=pr, note="orca gate resolved: land")
-            events, st = p.events(), pr_state(p.events()).get(pr, {})
-        elif resolution:
-            close_gate_task(p, pr, "failed")
-            return 1, f"human-gate: the user resolved the gate as '{resolution}'"
+    # Gates under either policy (under autonomous only a gated PR has one): this PR's, then below those of the stack
+    # layers its merge takes along. One still open makes land_order hold it, and with it every layer above.
+    held = approve_gates(p, [pr])
+    if pr in held:
+        close_gate_task(p, pr, "failed")
+        release_lanes(p, pr)
+        return 1, f"human-gate: the user resolved the gate as '{held[pr]}'"
+    events, st = p.events(), pr_state(p.events()).get(pr, {})
     main = main_state(events)
     if main == "red" and klass != "main-fix":
         return 1, "safety stop: main is red; only the repair lands (--class main-fix)"
     rows = open_rows(repo)
     stacks = repo_stacks(repo)
+    # A layer merged or closed meanwhile is no part of this merge. The open list is cut at a limit, so a layer missing
+    # from it is read on its own before it is left out.
+    listed = {r["number"] for r in rows}
+    below = [n for n in next((m[:m.index(pr)] for m in stacks.values() if pr in m), [])
+             if n in listed or pr_view(repo, n)["state"] == "OPEN"]
+    held = approve_gates(p, below)
+    for n in held:
+        close_gate_task(p, n, "failed")
+    if held:
+        release_lanes(p, pr)
+        n = min(held)
+        return 1, f"human-gate: the user resolved stack layer #{n}'s gate as '{held[n]}'; its stack does not land"
+    events = p.events()
     order = land_order(events, rows, cfg, dt.datetime.now(dt.timezone.utc), stacks, orca_deps(cfg["run"]))
     stacked = any(pr in members for members in stacks.values())
     me = next((e for e in order if e["pr"] == pr), None)
@@ -1758,6 +1801,7 @@ def attempt(p, pr, klass, onto_lower=False):
     if on_hold(events, pr):
         return 1, f"#{pr} is on hold (record parked); `orch record {p.slug} admitted --pr {pr}` releases it"
     if me["state"] == "waiting":
+        ExclusiveLock(p, me["base"] or "main").release(pr)  # a gate opened after it took the lane: free it meanwhile
         if st.get("yield", {}).get("note") != me["reasons"][0]:
             p.append("yield", pr=pr, note=me["reasons"][0])
         return 2, f"yield: {me['reasons'][0]}"
@@ -1874,7 +1918,7 @@ def cmd_land_check(argv):
             problems.append(f"patch changed since verdict ({verdict.get('patch_id', '')[:10]} -> {cur[:10]}): re-review")
         elif v["headRefOid"] != verdict.get("sha"):
             print(f"note: head moved {verdict['sha'][:8]} -> {v['headRefOid'][:8]} with the same patch-id; verdict holds, CI must pass at the new head")
-    if p.cfg["merge_policy"] == "human-gate" and "approved" not in st:
+    if (p.cfg["merge_policy"] == "human-gate" or "gate_opened" in st) and "approved" not in st:
         resolution = gate_resolution(p.cfg, events, pr)
         if resolution == "land":
             p.append("approved", pr=pr, note="orca gate resolved: land")
@@ -1932,8 +1976,7 @@ def cmd_landed(argv):
 def cmd_gate(argv):
     p = Program(argv[0])
     pr = int(opt(argv, "--pr"))
-    if p.cfg["merge_policy"] != "human-gate":
-        sys.exit("gates are for merge_policy human-gate; autonomous programs land with orch land")
+    # Under autonomous too: a PR that needs the human's approval gets a gate, and `land` waits for it (only that PR).
     if p.cfg.get("lead_dispatch"):
         sys.exit("this lead is a dispatched worker, and Orca lets no worker create a Task or gate on the Run it works "
                  "for (worker_cannot_coordinate_own_run). Ask the human with `orch decide add` per PR, or have the "
@@ -2380,8 +2423,9 @@ def on_hold(events, pr):
     return bool(marks) and marks[-1] == "parked"
 
 
-def review_sweep(events, view, active, unresolved, slug, gate=None):
-    """A review that outlasts its worker's session leaves a ready PR nobody lands."""
+def review_sweep(events, view, active, unresolved, slug, gate=None, human=True):
+    """A review that outlasts its worker's session leaves a ready PR nobody lands. gate reads a PR's gate resolution;
+    under human-gate (human) every PR needs one, under autonomous only a PR whose gate was opened waits on it."""
     ticket = pr_ticket(events)
     out, waiting = [], []
     for st in ready_prs(events):
@@ -2411,7 +2455,7 @@ def review_sweep(events, view, active, unresolved, slug, gate=None):
         threads = 0 if why else unresolved(n)
         if threads:
             why.append(f"{threads} unresolved thread(s)")
-        if not why and gate and "approved" not in st:
+        if not why and gate and "approved" not in st and (human or "gate_opened" in st):
             try:  # one unreadable gate must not cost the other PRs their lines
                 gw = gate_wait(st, gate, slug, n)
             except (SystemExit, Exception) as e:
@@ -2456,7 +2500,7 @@ def print_reviews(p):
         fields = "state,reviewDecision,mergeStateStatus,isDraft,labels,statusCheckRollup,headRefOid"
         lines = review_sweep(events, lambda n: gh_json("pr", "view", str(n), "--repo", repo, "--json", fields),
                              active - {None}, lambda n: unresolved_threads(repo, n), p.slug,
-                             (lambda n: gate_resolution(p.cfg, events, n)) if p.cfg.get("merge_policy") == "human-gate" else None)
+                             lambda n: gate_resolution(p.cfg, events, n), p.cfg.get("merge_policy") == "human-gate")
     except (SystemExit, Exception) as e:  # the batch and its ack line matter more than the sweep
         lines = [f"REVIEWS: sweep failed ({type(e).__name__}: {e}); orch status lists the ready PRs"]
     if lines:
@@ -2468,11 +2512,9 @@ GATE_SLICE_MS = 120000  # the dashboard rereads gates every 120 s (fleet.RUNS_EV
 
 def gate_news(p, failed):
     """({PR: resolution} for the open landing gates resolved and not yet reported, whether one is still pending).
-    Open: opened under human-gate, neither approved nor landed. Each gate is reported once (gates.json keeps the
+    Open: opened (under either policy), neither approved nor landed. Each gate is reported once (gates.json keeps the
     ids): a held gate, or a land `orch land` refuses before recording `approved`, stays open and would end every
     wait. An unreadable gate counts as pending and prints one line per wait (`failed`): it never ends the wait."""
-    if p.cfg.get("merge_policy") != "human-gate":
-        return {}, False
     events = p.events()
     gates = {n: st["gate_opened"].get("gate") for n, st in pr_state(events).items()
              if "gate_opened" in st and "approved" not in st and "landed" not in st}

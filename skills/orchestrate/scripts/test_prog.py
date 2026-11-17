@@ -296,6 +296,10 @@ assert prog.review_sweep(opened, lambda n: ok, set(), {}.get, "s", gate=gated("h
     "WAITING ON REVIEW #11 (R-11): human gate resolved as 'hold'"]
 assert prog.review_sweep(opened, lambda n: ok, set(), {}.get, "s", gate=gated("land"))[0].startswith("LAND #11"), "a gate the user resolved as land lands"
 assert prog.review_sweep(one + [{"ev": "approved", "pr": 11}], lambda n: ok, set(), {}.get, "s", gate=gated(None))[0].startswith("LAND #11")
+# Under autonomous only a PR whose gate was opened waits on it; an ungated one lands as before.
+assert prog.review_sweep(one, lambda n: ok, set(), {}.get, "s", gate=gated(None), human=False)[0].startswith("LAND #11")
+assert prog.review_sweep(opened, lambda n: ok, set(), {}.get, "s", gate=gated(None), human=False) == [
+    "WAITING ON REVIEW #11 (R-11): human gate open, waiting for the user"]
 def broken(n):
     raise SystemExit("orca down")
 two = opened + [{"ev": "ready", "pr": 12, "ticket": "R-12"}, {"ev": "verdict", "pr": 12, "result": "pass"}, {"ev": "approved", "pr": 12}]

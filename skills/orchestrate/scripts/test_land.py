@@ -4,9 +4,24 @@ os.environ.pop("ORCH_HEAVY_SLOT", None)  # this suite may itself run inside `orc
 
 HERE = pathlib.Path(__file__).resolve().parent
 FAKE_ORCA = r'''#!/usr/bin/env python3
-import json, os
-st = json.load(open(os.environ["FAKE_GH_STATE"]))
-print(json.dumps({"ok": True, "result": {"tasks": st.get("tasks", []), "workers": st.get("workers", [])}}))
+import json, os, sys
+path = os.environ["FAKE_GH_STATE"]
+st = json.load(open(path))
+verb = sys.argv[2:3]
+res = {"tasks": st.get("tasks", []), "workers": st.get("workers", [])}
+if verb == ["task-create"]:
+    res = {"taskId": "task_g", "status": "ready"}
+elif verb == ["gate-create"]:
+    res = {"gateId": "gate_g", "taskId": "task_g", "status": "pending"}
+    st["gates"] = [{"id": "gate_g", "task_id": "task_g", "status": "pending", "resolution": None}]
+elif verb == ["gate-list"]:
+    if st.get("gate_list_down"):
+        sys.exit("orca: gate-list failed")
+    res = {"gates": st.get("gates", [])}
+elif verb == ["task-update"]:
+    st["task_updates"] = st.get("task_updates", []) + [sys.argv[1:]]
+json.dump(st, open(path, "w"))
+print(json.dumps({"ok": True, "result": res}))
 '''
 FAKE_GH = r'''#!/usr/bin/env python3
 import json, os, sys
@@ -20,7 +35,7 @@ if flaky.get(" ".join(a[:2])):
     flaky[" ".join(a[:2])] -= 1; save()
     sys.exit('Post "https://api.github.com/graphql": net/http: TLS handshake timeout')
 if a[:2] == ["pr", "list"]:
-    print(json.dumps([dict(p, number=int(n)) for n, p in st["prs"].items() if p["state"] == "OPEN"]))
+    print(json.dumps([dict(p, number=int(n)) for n, p in st["prs"].items() if p["state"] == "OPEN" and not p.get("unlisted")]))
 elif a[:2] == ["pr", "view"] and a[-1] == "headRefName,labels,comments":
     p = pr(a[2])
     print(json.dumps({"headRefName": f"b{a[2]}",
@@ -647,5 +662,117 @@ assert code == 1 and "--note needs a value" in out and "Traceback" not in out, o
 code, out = prog(env, "record", "t", "spawned", "--note", "--ticket", "T-1")
 assert code == 1 and "--note needs a value" in out, out
 assert (len(ledger(d)) if led.exists() else 0) == n
+
+# An autonomous program gates one risky PR for the human: `orch gate` opens it, `land` yields until the human resolves
+# it, then records approved and lands. A PR with no gate lands at once, as before.
+d, env = setup({"50": pr(50), "51": pr(51, files=["src/other.py"])})
+verdict(d, 50, "T-50")
+verdict(d, 51, "T-51")
+code, out = prog(env, "gate", "t", "--pr", "50")
+assert code == 0 and any(e["ev"] == "gate_opened" and e["pr"] == 50 for e in ledger(d)), out
+code, out = prog(env, "land", "t", "--pr", "50")
+assert code == 2 and "gate" in out and "waiting for the user" in out, out
+assert not any(e["ev"] == "landed" and e.get("pr") == 50 for e in ledger(d))
+code, out = prog(env, "land", "t", "--pr", "51")
+assert code == 0 and "landed #51" in out, out
+st = json.loads((d / "state.json").read_text())
+st["gates"][0].update(status="resolved", resolution="land")
+(d / "state.json").write_text(json.dumps(st))
+code, out = prog(env, "land", "t", "--pr", "50")
+assert code == 0 and "landed #50" in out, out
+assert [e["ev"] for e in ledger(d) if e.get("pr") == 50][-2:] == ["approved", "landed"], ledger(d)
+assert json.loads((d / "state.json").read_text())["task_updates"][-1][3:6] == ["task_g", "--status", "completed"]
+# A stack lands from its top: a lower layer whose gate is still open holds the whole unit, so the top's land never
+# merges it.
+d, env = setup({"60": pr(60, stacked=True), "61": pr(61, base="b60", stacked=True)}, stacks=[[60, 61]])
+verdict(d, 60, "T-60")
+verdict(d, 61, "T-61")
+assert prog(env, "gate", "t", "--pr", "60")[0] == 0
+code, out = prog(env, "land", "t", "--pr", "61")
+assert code == 2 and "#60" in out and not any(e["ev"] == "landed" for e in ledger(d)), out
+# A gated PR waiting on the human does not keep the exclusive lane from one with no gate.
+d, env = setup({"62": pr(62, files=["compose.yaml"]), "63": pr(63, files=["compose.yaml"])})
+verdict(d, 62, "T-62")
+verdict(d, 63, "T-63")
+assert prog(env, "gate", "t", "--pr", "62")[0] == 0
+code, out = prog(env, "land", "t", "--pr", "63")
+assert code == 0 and "landed #63" in out, out
+# A gated PR closed while it waits is closed out as before: its Land task fails and land stops.
+st = json.loads((d / "state.json").read_text())
+st["prs"]["62"]["state"] = "CLOSED"
+(d / "state.json").write_text(json.dumps(st))
+code, out = prog(env, "land", "t", "--pr", "62")
+assert code == 1 and "CLOSED" in out, out
+assert json.loads((d / "state.json").read_text())["task_updates"][-1][3:6] == ["task_g", "--status", "failed"]
+# Another PR's gate is not this PR's business: Orca failing to read it does not stop this land.
+d, env = setup({"64": pr(64), "65": pr(65, files=["src/x.py"])})
+verdict(d, 64, "T-64")
+verdict(d, 65, "T-65")
+assert prog(env, "gate", "t", "--pr", "64")[0] == 0
+st = json.loads((d / "state.json").read_text())
+st["gate_list_down"] = True
+(d / "state.json").write_text(json.dumps(st))
+code, out = prog(env, "land", "t", "--pr", "65")
+assert code == 0 and "landed #65" in out, out
+# An exclusive stack whose lower layer waits on its gate waits whole: its top takes no lane. A PR that took the lane
+# before its gate was opened gives it back while it waits.
+d, env = setup({"66": pr(66, stacked=True, files=["compose.yaml"]),
+                "67": pr(67, base="b66", stacked=True, files=["compose.yaml"])}, stacks=[[66, 67]])
+verdict(d, 66, "T-66")
+verdict(d, 67, "T-67")
+assert prog(env, "gate", "t", "--pr", "66")[0] == 0
+code, out = prog(env, "land", "t", "--pr", "67")
+assert code == 2 and "#66" in out and not list((d / "programs" / "_locks").glob("*.lock")), out
+d, env = setup({"68": pr(68, files=["compose.yaml"], behind=1)})
+verdict(d, 68, "T-68")
+code, out = prog(env, "land", "t", "--pr", "68")
+assert code == 3 and "you hold the exclusive lane" in out and list((d / "programs" / "_locks").glob("*.lock")), out
+assert prog(env, "gate", "t", "--pr", "68")[0] == 0
+code, out = prog(env, "land", "t", "--pr", "68")
+assert code == 2 and not list((d / "programs" / "_locks").glob("*.lock")), out
+
+
+def resolve(d, res):
+    st = json.loads((d / "state.json").read_text())
+    st["gates"][0].update(status="resolved", resolution=res)
+    (d / "state.json").write_text(json.dumps(st))
+
+
+# A gate held while its PR keeps the lane: land stops for good, and the lane goes back.
+d, env = setup({"69": pr(69, files=["compose.yaml"], behind=1)})
+verdict(d, 69, "T-69")
+assert prog(env, "land", "t", "--pr", "69")[0] == 3 and list((d / "programs" / "_locks").glob("*.lock"))
+assert prog(env, "gate", "t", "--pr", "69")[0] == 0
+resolve(d, "hold")
+code, out = prog(env, "land", "t", "--pr", "69")
+assert code == 1 and "'hold'" in out and not list((d / "programs" / "_locks").glob("*.lock")), out
+# A lower stack layer's gate held: the top cannot land, says why, and the layer's Land task fails.
+d, env = setup({"70": pr(70, stacked=True), "71": pr(71, base="b70", stacked=True)}, stacks=[[70, 71]])
+verdict(d, 70, "T-70")
+verdict(d, 71, "T-71")
+assert prog(env, "gate", "t", "--pr", "70")[0] == 0
+resolve(d, "hold")
+code, out = prog(env, "land", "t", "--pr", "71")
+assert code == 1 and "#70" in out and "'hold'" in out, out
+assert json.loads((d / "state.json").read_text())["task_updates"][-1][3:6] == ["task_g", "--status", "failed"]
+# A lower layer merged outside land is no longer part of the merge: its held gate does not stop the layer above.
+d, env = setup({"72": pr(72), "73": pr(73, base="b72")}, stacks=[[72, 73]])
+verdict(d, 72, "T-72")
+verdict(d, 73, "T-73")
+assert prog(env, "gate", "t", "--pr", "72")[0] == 0
+resolve(d, "hold")
+st = json.loads((d / "state.json").read_text())
+st["prs"]["72"].update(state="MERGED", merge_sha="m72")
+(d / "state.json").write_text(json.dumps(st))
+code, out = prog(env, "land", "t", "--pr", "73")
+assert code != 1 or "#72" not in out, out
+# One still open but missing from the open list (cut at its limit) is read on its own: its held gate still stops.
+d, env = setup({"74": dict(pr(74), unlisted=True), "75": pr(75, base="b74")}, stacks=[[74, 75]])
+verdict(d, 74, "T-74")
+verdict(d, 75, "T-75")
+assert prog(env, "gate", "t", "--pr", "74")[0] == 0
+resolve(d, "hold")
+code, out = prog(env, "land", "t", "--pr", "75")
+assert code == 1 and "#74" in out and "'hold'" in out, out
 
 print("prog.py land against fake gh: all pass")
