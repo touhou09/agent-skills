@@ -189,7 +189,7 @@ admitted, parked, approved, gate_opened, stop, resume, predicate_verified, confi
 land_check, yield, lane, lock_acquired, lock_released, reprioritized, signal.
 Tickets come from the tracker adapter (use-tracker/scripts/tracker.py), never from a tracker directly.
 """
-import contextlib, datetime as dt, fcntl, fnmatch, hashlib, heapq, json, os, pathlib, re, shlex, subprocess, sys, tempfile, time
+import contextlib, datetime as dt, fcntl, fnmatch, hashlib, heapq, json, os, pathlib, re, shlex, signal, subprocess, sys, tempfile, time
 
 TRACKER = pathlib.Path(__file__).resolve().parents[2] / "use-tracker" / "scripts" / "tracker.py"
 HOME = pathlib.Path(os.environ.get("PROGRAMS_HOME", "~/.claude/programs")).expanduser()
@@ -3083,13 +3083,15 @@ def fleet_parse(s):
 
 def hold_while(holds, target, by, ttl, cmd):
     """Run cmd while holding target, refreshing the hold every third of its ttl so a use longer than the ttl is never
-    broken under it; released when cmd ends, however it ends. Returns cmd's exit code."""
-    refresh = True
+    broken under it; released when cmd ends, however it ends. A stop signal to this wrapper (INT, TERM, HUP) goes to
+    cmd, and the hold is released only once cmd has exited. Returns cmd's exit code."""
+    refresh, proc, old = True, None, {}
     try:
         proc = subprocess.Popen(cmd)
+        old = {s: signal.signal(s, lambda sig, _: proc.send_signal(sig)) for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
         while True:
             try:
-                return proc.wait(timeout=max(ttl * 20, 1))  # ttl * 60 / 3 seconds
+                return proc.wait(timeout=ttl * 20)  # a third of the ttl, in seconds
             except subprocess.TimeoutExpired:
                 if refresh:
                     try:
@@ -3098,6 +3100,11 @@ def hold_while(holds, target, by, ttl, cmd):
                         print(f"hold: lost {target}: {e}", file=sys.stderr, flush=True)
                         refresh = False
     finally:
+        for s, h in old.items():
+            signal.signal(s, h)
+        if proc and proc.poll() is None:  # an error in this loop, not the command's end: stop it before releasing
+            proc.terminate()
+            proc.wait()
         with contextlib.suppress(ValueError):
             holds.release(target, by)
 
@@ -3128,6 +3135,8 @@ def cmd_hold(argv, release=False):
             print(f"released {target}" if held else f"{target} was not held")
         else:
             ttl = float(opt(argv, "--ttl", holds.TTL_MIN))
+            if not 0.1 <= ttl <= 10080:  # under 6 s a refresh (every third, at least 2 s) cannot beat it; nan fails too
+                sys.exit("--ttl is minutes from 0.1 to 10080")
             row = holds.hold(target, by, opt(argv, "--note"), ttl)
             print(f"{target} held by {row['by']} (ttl {row['ttl_min']:g}m)", flush=True)
             if cmd:
