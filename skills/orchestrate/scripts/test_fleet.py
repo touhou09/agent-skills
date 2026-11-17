@@ -480,7 +480,7 @@ class Replaced(FakeSync):
 arm(bash_rec)
 fs = Replaced(TALL, TALL)
 assert fleet.answer_prompt("wt-docs", "p-bash", "approve", sender=fs)[1]["reason"] == \
-    "a newer permission request replaced the recorded one; answer in the terminal" and fs.sent == []
+    "the recorded permission request was replaced or answered; answer in the terminal" and fs.sent == []
 arm({**bash_rec, "input": {"command": "make deploy"}})
 fs = FakeSync(STICKY)
 out = fleet.answer_prompt("wt-docs", "p-bash", "approve", sender=fs)[1]
