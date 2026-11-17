@@ -14,6 +14,7 @@ import fleet  # noqa: E402  after the env points the state directory at root
 fleet.CLAUDE_HOMES = ()  # only the CLAUDE_CONFIG_DIR a block points at, never this machine's sessions
 
 fetch_runs, fetch_fast = fleet.fetch_runs, fleet.fetch_fast  # later swapped for the fake world's
+orca_itself = fleet.orca  # later sections swap it for fakes
 
 state_dir = pathlib.Path(os.environ["ORCH_FLEET_STATE"])
 now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
@@ -522,6 +523,9 @@ saved = json.loads((dec_state / "decisions.json").read_text())["decisions"]["d1"
 assert saved["status"] == "dropped" and saved["answer"] == "CSV", saved
 assert orch("list")[1] == ""
 
+# A relay also mails the answer through Orca: until the tests below pass their own, no call reaches this machine's Orca.
+stray, real_orca_mail = [], fleet.orca
+fleet.orca = lambda *a, **k: stray.append(a) or {}
 fleet.write_atomic(state_dir / "decisions.json", json.dumps({"next": 1}))
 d = fleet.decision_add("Ship the export?", "See https://example.com/x", ["Yes::now", "No"], 1, handle="term_coord")
 lost = fleet.decision_add("From a closed terminal", handle="term_gone")
@@ -589,6 +593,95 @@ for did, verb in ((fleet.decision_add("A", handle="term_coord")["id"], "done"), 
     assert r.returncode == 0, r.stderr
 assert fleet.pending_relays() == [], fleet.pending_relays()
 world.worktrees[0]["agents"][0]["state"] = "working"
+# The answer also goes, once, to the mailbox the coordinator's `orch wait` or `orch inbox --wait` reads: those wait on
+# Orca mail, never on the terminal. It goes while the coordinator works too; typing still waits for it to be idle.
+posts = []
+# The Run the terminal binds now, as `run-current` reads it: run-list's coordinator handle can be stale, and the
+# coordinator may have moved (`run-use`) since the collector's last read.
+bound = ["run_new"]
+
+
+def orca_call(*a):
+    if a[:2] == ("orchestration", "run-current"):
+        assert a[a.index("--from") + 1] == "term_coord", a
+        return {"runId": bound[0]}
+    posts.append(a)
+    return {}
+
+
+def lost_reply(*a):
+    if a[:2] == ("orchestration", "run-current"):
+        return {"runId": bound[0]}
+    posts.append(a)
+    raise fleet.SourceError('orchestrationRequestId req_0FAKE: {"code":"connection_closed"}')
+
+
+fleet.DECISION_UNDO_S = 60
+mid = fleet.decision_add("Mail it?", handle="term_coord")["id"]
+fleet.decision_answer(mid, "Yes")
+f.tick(force=True)
+assert fleet.relay_decisions(busy, runs=f.runs, call=orca_call) == [] and posts == [], "inside the undo window nothing is mailed"
+assert fleet.decision_reopen(mid)[0] == 200 and fleet.decision_answer(mid, "Yes")[0] == 200
+fleet.DECISION_UNDO_S = 0
+assert fleet.relay_decisions(busy, runs=f.runs, call=lost_reply) == [] and not fleet.pending_relays()[0].get("mailed")
+assert "--retry-request" not in posts.pop()
+assert fleet.decision_reopen(mid)[0] == 409, "a send that may have arrived is not taken back"
+bound[0] = "run_newer"  # a replay must repeat the first request's arguments, or Orca refuses it (request_mismatch)
+typed_before = len(busy.calls)
+assert fleet.relay_decisions(busy, runs=f.runs, call=orca_call) == [] and len(busy.calls) == typed_before
+assert len(posts) == 1, posts  # its session is working: mailed, not typed
+sent = dict(zip(posts[0][2::2], posts[0][3::2]))
+assert posts[0][:2] == ("orchestration", "send") and sent["--to"] == "run:run_new" and sent["--type"] == "question", posts
+assert sent["--retry-request"] == "req_0FAKE", "a send whose reply was lost is replayed, never sent a second time"
+assert sent["--from"] == "term_coord", "the server runs in no terminal: Orca needs the sender named"
+assert sent["--body"] == f"decision {mid}: Yes" and json.loads(sent["--payload"]) == {"decision": mid}, sent
+assert fleet.relay_decisions(busy, runs=f.runs, call=orca_call) == [] and len(posts) == 1, "mailed once"
+assert fleet.decision_reopen(mid)[0] == 409, "an answer already mailed is not taken back"
+world.worktrees[0]["agents"][0]["state"] = "done"
+f.tick(force=True)
+assert fleet.relay_decisions(ok, runs=f.runs, call=orca_call) == [mid] and ok.calls == [("term_coord", f"decision {mid}: Yes")]
+assert fleet.relay_decisions(ok, runs=f.runs, call=orca_call) == [] and len(posts) == 1 and fleet.pending_relays() == []
+# The CLI itself timed out, so Orca named no request: the mail may have arrived, and it is not sent again.
+fleet.DECISION_UNDO_S = 60
+cut = fleet.decision_add("Cut off?", handle="term_coord")["id"]
+fleet.decision_answer(cut, "Yes")
+fleet.DECISION_UNDO_S = 0
+
+
+def cli_timeout(*a):
+    if a[:2] == ("orchestration", "run-current"):
+        return {"runId": bound[0]}
+    posts.append(a)
+    raise fleet.SourceError("orca timed out after 30s")
+
+
+assert fleet.relay_decisions(busy, runs=f.runs, call=cli_timeout) == [] and len(posts) == 2
+assert fleet.relay_decisions(busy, runs=f.runs, call=orca_call) == [] and len(posts) == 2, "not resent"
+assert fleet.decision_reopen(cut)[0] == 409 and fleet.pending_relays()[-1]["mailed"] == "unconfirmed"
+assert fleet.relay_decisions(ok, runs=f.runs, call=orca_call) == [cut] and len(posts) == 2, "the terminal line still goes"
+world.worktrees[0]["agents"][0]["state"] = "working"
+ok.calls.clear()
+# The mail is the coordinator's, not a question for the human: it never shows in Needs you.
+world.messages.append({"id": "m_dec", "type": "question", "from_handle": None, "to_handle": "run:run_demo", "read": False,
+                       "subject": f"decision {mid} answered", "body": sent["--body"], "payload": sent["--payload"],
+                       "created_at": fleet.iso(clock[0])})
+assert "mail:m_dec" not in {i["key"] for i in f.tick(force=True)["items"]}
+world.messages.pop()
+# The mailbox its wait reads: the Run it coordinates (a lead with its own Run that is also a worker of the root's Run
+# waits on its Run), else its dispatch (a lead started as a worker, with no Run of its own), else the handle.
+assert [fleet.decision_mailbox(h, f.runs) for h in ("term_lead", "term_coord", "term_login", "term_x")] == [
+    "run:run_lead", "run:run_demo", "dispatch:ctx_login", "term_x"]
+fleet.orca = real_orca_mail
+# Orca's error for a send whose reply was lost names the request deep in a long body: it survives the cut to 300.
+real_run_json = fleet.run_json
+fleet.run_json = lambda cmd, timeout=30: {"ok": False, "error": {"code": "connection_closed", "message": "x" * 500,
+                                                                   "data": {"orchestrationRequestId": "req_LONG"}}}
+try:
+    orca_itself("orchestration", "send")
+    raise AssertionError("no error")
+except fleet.SourceError as e:
+    assert str(e).startswith("orchestrationRequestId req_LONG"), e
+fleet.run_json = real_run_json
 
 # A click on a gate option resolves it in Orca, from the server: only a gate the last read listed open, with one of its
 # own options. Resolved, it leaves Needs you on the next collect, before the next read of its Run.

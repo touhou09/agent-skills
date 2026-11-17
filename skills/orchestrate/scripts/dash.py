@@ -1476,7 +1476,7 @@ def fleet_loop():
             log(f"fleet: tick failed: {e!r}")
             jobs.record("fleet-tick", error=repr(e), next_in=fleet_wait(), event=FLEET.event)
         try:
-            relayed, reloaded = fleet.relay_decisions(), fleet.retry_reloads()
+            relayed, reloaded = fleet.relay_decisions(runs=FLEET.runs), fleet.retry_reloads()
             for did in relayed:
                 log(f"fleet: relayed the answer to {did}")
             for h in reloaded:

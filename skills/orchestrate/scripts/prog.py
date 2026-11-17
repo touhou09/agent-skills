@@ -2862,7 +2862,8 @@ def cmd_decide(argv):
                     mark = " (recommended)" if i == d.get("recommend") else ""
                     print(f"    {i}. {o['label']}{mark}" + (f" — {o['description']}" if o["description"] else ""))
             for d in fleet.pending_relays():
-                print(f"{d['id']}  answered on the dashboard, not relayed yet: {d.get('answer')}  ({d['title']})")
+                how = "mailed, not typed yet" if d.get("mailed") else "not relayed yet"
+                print(f"{d['id']}  answered on the dashboard, {how}: {d.get('answer')}  ({d['title']})")
         elif sub in ("done", "drop") and rest:
             d = fleet.decision_close(rest[0], "done" if sub == "done" else "dropped", opt(rest, "--answer"))
             print(f"{d['id']} {d['status']}")
