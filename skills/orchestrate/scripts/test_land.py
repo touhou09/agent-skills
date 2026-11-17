@@ -680,5 +680,27 @@ code, out = prog(env, "land", "t", "--pr", "50")
 assert code == 0 and "landed #50" in out, out
 assert [e["ev"] for e in ledger(d) if e.get("pr") == 50][-2:] == ["approved", "landed"], ledger(d)
 assert json.loads((d / "state.json").read_text())["task_updates"][-1][3:6] == ["task_g", "--status", "completed"]
+# A stack lands from its top: a lower layer whose gate is still open holds the whole unit, so the top's land never
+# merges it.
+d, env = setup({"60": pr(60, stacked=True), "61": pr(61, base="b60", stacked=True)}, stacks=[[60, 61]])
+verdict(d, 60, "T-60")
+verdict(d, 61, "T-61")
+assert prog(env, "gate", "t", "--pr", "60")[0] == 0
+code, out = prog(env, "land", "t", "--pr", "61")
+assert code == 2 and "#60" in out and not any(e["ev"] == "landed" for e in ledger(d)), out
+# A gated PR waiting on the human does not keep the exclusive lane from one with no gate.
+d, env = setup({"62": pr(62, files=["compose.yaml"]), "63": pr(63, files=["compose.yaml"])})
+verdict(d, 62, "T-62")
+verdict(d, 63, "T-63")
+assert prog(env, "gate", "t", "--pr", "62")[0] == 0
+code, out = prog(env, "land", "t", "--pr", "63")
+assert code == 0 and "landed #63" in out, out
+# A gated PR closed while it waits is closed out as before: its Land task fails and land stops.
+st = json.loads((d / "state.json").read_text())
+st["prs"]["62"]["state"] = "CLOSED"
+(d / "state.json").write_text(json.dumps(st))
+code, out = prog(env, "land", "t", "--pr", "62")
+assert code == 1 and "CLOSED" in out, out
+assert json.loads((d / "state.json").read_text())["task_updates"][-1][3:6] == ["task_g", "--status", "failed"]
 
 print("prog.py land against fake gh: all pass")

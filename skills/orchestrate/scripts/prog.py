@@ -660,6 +660,10 @@ def land_order(events, rows, cfg, when, stacks=None, deps=None):
         state, reasons = row_state(rows.get(pr), s.get("verdict"))
         if on_hold(events, pr) and state != "gone":
             state, reasons = "blocked", ["on hold"] + reasons
+        # Gated and not approved (attempt records `approved` once the human resolves it as land): it waits, so it
+        # holds no exclusive lane and the top of its stack does not merge it.
+        if "gate_opened" in s and "approved" not in s and state != "gone":
+            state, reasons = "waiting", [f"#{pr}'s gate is open in Orca, waiting for the user"] + reasons
         live = stack_of.get(pr, [])
         below_t = {tickets.get(b) for b in live[:live.index(pr)]} if live else set()
         waits = sorted(b for b in after.get(ticket, ()) if b not in landed_t | below_t)
@@ -1714,17 +1718,18 @@ def attempt(p, pr, klass, onto_lower=False):
         return 0, f"#{pr} already landed as {st['landed'].get('sha', '')[:8]}"
     if stopped(events):
         return 1, "STOP line active: nothing lands"
-    # A PR with a gate open waits for the human under either policy; under autonomous only a gated PR does.
-    if "approved" not in st and "gate_opened" in st:
-        resolution = gate_resolution(cfg, events, pr)
+    # Gates under either policy (under autonomous only a gated PR has one), for this PR and every other gated one: a
+    # stack's top merges its lower layers, so theirs must read approved too. One still open makes land_order hold it.
+    gated = [n for n, s in pr_state(events).items() if "gate_opened" in s and not {"approved", "landed"} & s.keys()]
+    for n in gated:
+        resolution = gate_resolution(cfg, events, n)
         if resolution == "land":
-            p.append("approved", pr=pr, note="orca gate resolved: land")
-            events, st = p.events(), pr_state(p.events()).get(pr, {})
-        elif resolution:
+            p.append("approved", pr=n, note="orca gate resolved: land")
+        elif resolution and n == pr:
             close_gate_task(p, pr, "failed")
             return 1, f"human-gate: the user resolved the gate as '{resolution}'"
-        else:
-            return 2, f"yield: #{pr}'s gate is open in Orca, waiting for the user"
+    if gated:
+        events, st = p.events(), pr_state(p.events()).get(pr, {})
     main = main_state(events)
     if main == "red" and klass != "main-fix":
         return 1, "safety stop: main is red; only the repair lands (--class main-fix)"
