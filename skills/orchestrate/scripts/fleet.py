@@ -2354,8 +2354,9 @@ def dismiss(fleet, key):
     seq = next((i["seq"] for i in external_items() if i["key"] == key), None) if key.startswith("ext:") else None
     with fleet.lock:
         fleet.mem.setdefault("dismissed", {})[key] = iso(utcnow())
-        if seq is not None:
-            fleet.mem.setdefault("dismissed_rounds", {})[key] = seq
+        if seq is not None:  # two dismisses can race (a threaded server): the round never moves back
+            rounds = fleet.mem.setdefault("dismissed_rounds", {})
+            rounds[key] = max(rounds.get(key, -1), seq)
         st = fleet.mem.get("sticky", {}).get(key)
         if st:
             st["open"] = False

@@ -114,6 +114,9 @@ fleet.utcnow = lambda: now  # the same second as the dismiss: the round dismisse
 fleet.inbox_add("run_command", "Run the setup line", command="echo setup", key="setup:demo")
 fleet.utcnow = real_utcnow
 assert "ext:setup:demo" in {i["key"] for i in f.tick(force=True)["items"]}, "added again after the dismiss: shown"
+f.mem["dismissed_rounds"]["ext:setup:demo"] = 10**6  # a later round, saved meanwhile by a concurrent dismiss
+fleet.dismiss(f, "ext:setup:demo")
+assert f.mem["dismissed_rounds"]["ext:setup:demo"] == 10**6, "a slower dismiss never moves the round back"
 fleet.inbox_resolve("setup:demo")
 st = f.tick(force=True)
 
