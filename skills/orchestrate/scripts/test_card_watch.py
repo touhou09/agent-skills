@@ -130,7 +130,19 @@ def start(screen, out_at, seen_term=True):
     return card_watch.check_start("hn", lambda h: at(screen), lambda: [t] if at(seen_term) else [], 240, 30, clock, clock.sleep)
 later = lambda c: (c.t + 200) * 1000
 assert start(goal, later) == ["STARTED card-n: /goal active, output since the check began"]
-assert start(goal, lambda c: c.t * 1000 - 1)[0].startswith("STUCK card-n (not started)"), "/goal active but silent since create"
+# A lead that started before the check and then waits quietly (a background `orch wait`) has worked on screen: its
+# assistant lines (⏺) sit above the input box. Shape read from a live /goal card; the ⏺ rows under the box are the
+# status area's agents, not work.
+waiting = ["⏺ Workers dispatched; waiting on the Run in the background.", "  Ran 2 shell commands", "─" * 40, "❯", "─" * 40,
+           "  ⏵⏵ bypass permissions on · 1 shell", "  ⏺ main", "                                     ◎ /goal active (2h)"]
+before = lambda c: c.t * 1000 - 5 * 60000
+assert start(waiting, before) == ["STARTED card-n: /goal active, work on screen from before the check"]
+assert start(goal, before) == ["STARTED card-n: /goal active, work on screen from before the check"]
+typed = ["> /goal ship it", "  ⎿  Goal set: ship it", "─" * 40, "❯", "─" * 40, "  ⏵⏵ bypass permissions on",
+         "  ⏺ main", "                                     ◎ /goal active (2h)"]
+assert start(typed, lambda c: c.t * 1000 - 1) == [
+    'STUCK card-n (not started): /goal active but no work on screen and no output since the check began;'
+    ' last line "◎ /goal active (2h)"', "  orca terminal read --terminal hn --screen"], "/goal typed, nothing done"
 shell = ["Last login: Thu", "user@host card-n % /goal ship it"]
 assert start(shell, later)[0] == 'STUCK card-n (not started): no /goal active with new output; last line "user@host card-n % /goal ship it"'
 assert start(dead403, lambda c: c.t * 1000 - 3 * 60000)[0] == 'STUCK card-n (auth): "Please run /login · API Error: 403 Forbidden"', \
