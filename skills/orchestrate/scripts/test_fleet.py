@@ -623,6 +623,7 @@ assert fleet.decision_reopen(mid)[0] == 200 and fleet.decision_answer(mid, "Yes"
 fleet.DECISION_UNDO_S = 0
 assert fleet.relay_decisions(busy, runs=f.runs, call=lost_reply) == [] and not fleet.pending_relays()[0].get("mailed")
 assert "--retry-request" not in posts.pop()
+assert fleet.decision_reopen(mid)[0] == 409, "a send that may have arrived is not taken back"
 typed_before = len(busy.calls)
 assert fleet.relay_decisions(busy, runs=f.runs, call=orca_call) == [] and len(busy.calls) == typed_before
 assert len(posts) == 1, posts  # its session is working: mailed, not typed
@@ -637,6 +638,24 @@ world.worktrees[0]["agents"][0]["state"] = "done"
 f.tick(force=True)
 assert fleet.relay_decisions(ok, runs=f.runs, call=orca_call) == [mid] and ok.calls == [("term_coord", f"decision {mid}: Yes")]
 assert fleet.relay_decisions(ok, runs=f.runs, call=orca_call) == [] and len(posts) == 1 and fleet.pending_relays() == []
+# The CLI itself timed out, so Orca named no request: the mail may have arrived, and it is not sent again.
+fleet.DECISION_UNDO_S = 60
+cut = fleet.decision_add("Cut off?", handle="term_coord")["id"]
+fleet.decision_answer(cut, "Yes")
+fleet.DECISION_UNDO_S = 0
+
+
+def cli_timeout(*a):
+    if a[:2] == ("orchestration", "run-list"):
+        return live_runs
+    posts.append(a)
+    raise fleet.SourceError("orca timed out after 30s")
+
+
+assert fleet.relay_decisions(busy, runs=f.runs, call=cli_timeout) == [] and len(posts) == 2
+assert fleet.relay_decisions(busy, runs=f.runs, call=orca_call) == [] and len(posts) == 2, "not resent"
+assert fleet.decision_reopen(cut)[0] == 409 and fleet.pending_relays()[-1]["mailed"] == "unconfirmed"
+assert fleet.relay_decisions(ok, runs=f.runs, call=orca_call) == [cut] and len(posts) == 2, "the terminal line still goes"
 world.worktrees[0]["agents"][0]["state"] = "working"
 ok.calls.clear()
 # The mail is the coordinator's, not a question for the human: it never shows in Needs you.

@@ -2477,9 +2477,12 @@ def mail_decision(d, handle, runs, call=None):
              "--payload", json.dumps({"decision": d["id"]}), *retry)
     except SourceError as e:
         rid = re.search(r"orchestrationRequestId\W+([\w-]+)", str(e))
-        if rid:
-            change_decisions(lambda store: (store.get("decisions", {}).get(d["id"]) or {}).update(mail_request=rid.group(1)))
-        return False  # the next collect tries again
+        # The CLI timed out with no request named: the mail may have arrived, so it is never sent again (the
+        # terminal line still follows). Any other failure is retried on the next collect.
+        mark = {"mail_request": rid.group(1)} if rid else {"mailed": "unconfirmed"} if "timed out" in str(e) else None
+        if mark:
+            change_decisions(lambda store: (store.get("decisions", {}).get(d["id"]) or {}).update(mark))
+        return False
     change_decisions(lambda store: (store.get("decisions", {}).get(d["id"]) or {}).update(mailed=True))
     return True
 
@@ -2534,9 +2537,9 @@ def decision_reopen(did, rev=None):
             raise ValueError(f"no decision {did}")
         if rev and d.get("rev") != rev:
             raise ValueError(f"{did} was answered again since")
-        if d.get("status") != "done" or d.get("delivered") is not False or d.get("mailed"):
-            raise ValueError(f"{did} already reached the orchestrator or lead" if d.get("delivered") or d.get("mailed")
-                             else f"{did} is {d.get('status')}")
+        sent = d.get("delivered") or d.get("mailed") or d.get("mail_request")  # a send whose outcome is unknown counts
+        if d.get("status") != "done" or d.get("delivered") is not False or sent:
+            raise ValueError(f"{did} already reached the orchestrator or lead" if sent else f"{did} is {d.get('status')}")
         for k in ("answer", "closed_at", "delivered", "rev"):
             d.pop(k, None)
         d["status"] = "open"
