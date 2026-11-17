@@ -755,5 +755,16 @@ resolve(d, "hold")
 code, out = prog(env, "land", "t", "--pr", "71")
 assert code == 1 and "#70" in out and "'hold'" in out, out
 assert json.loads((d / "state.json").read_text())["task_updates"][-1][3:6] == ["task_g", "--status", "failed"]
+# A lower layer merged outside land is no longer part of the merge: its held gate does not stop the layer above.
+d, env = setup({"72": pr(72), "73": pr(73, base="b72")}, stacks=[[72, 73]])
+verdict(d, 72, "T-72")
+verdict(d, 73, "T-73")
+assert prog(env, "gate", "t", "--pr", "72")[0] == 0
+resolve(d, "hold")
+st = json.loads((d / "state.json").read_text())
+st["prs"]["72"].update(state="MERGED", merge_sha="m72")
+(d / "state.json").write_text(json.dumps(st))
+code, out = prog(env, "land", "t", "--pr", "73")
+assert code != 1 or "#72" not in out, out
 
 print("prog.py land against fake gh: all pass")
