@@ -219,6 +219,9 @@ orca terminal read --terminal <handle> --screen
 orch watch-cards --card <handle>   # under run_in_background: STARTED, ENDED, CLOSED, or STUCK on a lost login, a prompt or no /goal
 ```
 
+`STARTED` needs `/goal active` and either output since the check began or an assistant line (`⏺`)
+above the input box: a card that started before the check and now waits quietly has started.
+
 Take the handle only from the `card.handle` field of the output (Orca's `launch.outcome.handle`,
 or `agentTerminalHandle` on an older Orca), never from a loose `term_…` match: the brief or its context can quote another handle (your own among them), and a
 `/goal` or nudge sent to the first match lands on the sending session. Before any send,
