@@ -90,7 +90,10 @@ VERIFY      Exact commands, or the repo's .claude/skills/verify-<app> feature to
             `orch hold <slot> --note "<what it checks>"` before its first use, used only once that
             prints held, and given back with `orch release <slot>` when done. While another unit
             holds it, wait for it with the same `orch hold` command in an `until` loop under
-            `run_in_background`; the lead keeps no queue of its own.
+            `run_in_background`; the lead keeps no queue of its own. A unit with no terminal
+            handle (a subagent's shell, a script outside Orca) passes `--by <a name only it
+            uses>`. A use that may outlast the hold's ttl (120 minutes) runs as `orch hold <slot>
+            -- <command…>`: the hold is refreshed while the command runs and given back when it ends.
             A step on a running stack gets its address and keys from the command VERIFY names
             for them (the verify skill's helper sourced with the run id, then its variables),
             written here before the first stack command. A command never names the run's state

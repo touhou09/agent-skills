@@ -3081,10 +3081,34 @@ def fleet_parse(s):
     return t if t.tzinfo else t.astimezone()
 
 
+def hold_while(holds, target, by, ttl, cmd):
+    """Run cmd while holding target, refreshing the hold every third of its ttl so a use longer than the ttl is never
+    broken under it; released when cmd ends, however it ends. Returns cmd's exit code."""
+    refresh = True
+    try:
+        proc = subprocess.Popen(cmd)
+        while True:
+            try:
+                return proc.wait(timeout=max(ttl * 20, 1))  # ttl * 60 / 3 seconds
+            except subprocess.TimeoutExpired:
+                if refresh:
+                    try:
+                        holds.hold(target, by, None, ttl)
+                    except ValueError as e:  # someone took it with --force: stop refreshing, let the command finish
+                        print(f"hold: lost {target}: {e}", file=sys.stderr, flush=True)
+                        refresh = False
+    finally:
+        with contextlib.suppress(ValueError):
+            holds.release(target, by)
+
+
 def cmd_hold(argv, release=False):
     import holds
-    target = argv[0] if not argv[0].startswith("--") else None
-    by = opt(argv, "--by") or os.environ.get("ORCA_TERMINAL_HANDLE") or os.environ.get("USER") or "unknown"
+    cut = argv.index("--") if "--" in argv else len(argv)
+    argv, cmd = argv[:cut], argv[cut + 1:]
+    target = argv[0] if argv and not argv[0].startswith("--") else None
+    # Never a login name: every unit without a handle would share it and pass as refreshing one another's hold.
+    by = opt(argv, "--by") or os.environ.get("ORCA_TERMINAL_HANDLE")
     try:
         if not release and "--list" in argv:
             rows = holds.current()
@@ -3095,14 +3119,19 @@ def cmd_hold(argv, release=False):
             if not rows and "--json" not in argv:
                 print("nothing held")
         elif not target:
-            sys.exit("usage: orch hold <resource> [--note TEXT] [--ttl MIN] [--by WHO] | hold --list [--json] | "
+            sys.exit("usage: orch hold <resource> [--note TEXT] [--ttl MIN] [--by WHO] [-- <command…>] | hold --list [--json] | "
                      "release <resource> [--by WHO] [--force]")
+        elif not by:
+            sys.exit("no terminal handle to own the hold: pass --by <a name only this unit uses> (a subagent's or script's own)")
         elif release:
             held = holds.release(target, by, force="--force" in argv)
             print(f"released {target}" if held else f"{target} was not held")
         else:
-            row = holds.hold(target, by, opt(argv, "--note"), int(opt(argv, "--ttl", holds.TTL_MIN)))
-            print(f"{target} held by {row['by']} (ttl {row['ttl_min']}m)")
+            ttl = float(opt(argv, "--ttl", holds.TTL_MIN))
+            row = holds.hold(target, by, opt(argv, "--note"), ttl)
+            print(f"{target} held by {row['by']} (ttl {row['ttl_min']:g}m)", flush=True)
+            if cmd:
+                sys.exit(hold_while(holds, target, by, ttl, cmd))
     except (ValueError, OSError) as e:
         sys.exit(str(e))
 

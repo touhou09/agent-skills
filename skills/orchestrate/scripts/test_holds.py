@@ -46,4 +46,24 @@ assert orch("release", "browser", "--force", ORCA_TERMINAL_HANDLE="term_b")[1] =
 assert json.loads((locks / "holds.jsonl").read_text().splitlines()[-1])["note"] == "forced by term_b"
 assert orch("release", "browser")[1] == "browser was not held"
 
+# A unit with no terminal handle (a subagent's shell, a script outside Orca) names itself: units are never merged
+# under one login name, where two of them would both pass as "refreshing my own hold".
+code, _, err = orch("hold", "browser", ORCA_TERMINAL_HANDLE="")
+assert code == 1 and "--by" in err and not (locks / "res__browser.lock").exists(), err
+assert orch("release", "browser", ORCA_TERMINAL_HANDLE="")[0] == 1
+assert orch("hold", "browser", "--by", "sub-a", ORCA_TERMINAL_HANDLE="")[1] == "browser held by sub-a (ttl 120m)"
+assert orch("hold", "browser", "--by", "sub-b", ORCA_TERMINAL_HANDLE="")[0] == 1
+assert orch("release", "browser", "--by", "sub-a", ORCA_TERMINAL_HANDLE="")[1] == "released browser"
+
+# `hold <r> -- <command>` holds it while the command runs, refreshed well inside its ttl, and gives it back after:
+# a use longer than the ttl is never broken under it. The command's exit code is the result.
+(locks / "holds.jsonl").unlink()
+code, out, err = orch("hold", "browser", "--ttl", "0.05", "--", sys.executable, "-c", "import time; time.sleep(5)")
+assert code == 0 and out.startswith("browser held by term_a"), (code, out, err)
+events = [json.loads(l) for l in (locks / "holds.jsonl").read_text().splitlines()]
+assert [(e["ev"], e.get("note")) for e in events] == [("lock_acquired", None), ("lock_released", None)], events
+assert not (locks / "res__browser.lock").exists()
+assert orch("hold", "browser", "--", sys.executable, "-c", "raise SystemExit(3)")[0] == 3
+assert not (locks / "res__browser.lock").exists(), "released when the command fails too"
+
 print("test_holds: ok")
