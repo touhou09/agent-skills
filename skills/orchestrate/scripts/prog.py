@@ -3085,49 +3085,63 @@ def hold_while(holds, target, by, ttl, cmd):
     """Run cmd while holding target, refreshing the hold every third of its ttl so a use longer than the ttl is never
     broken under it; released when cmd ends, however it ends. cmd runs in its own process group: a stop signal to this
     wrapper (INT, TERM, HUP) goes to the whole group, and the hold is released only once every process in it has
-    exited (a shell's children too). Returns cmd's exit code, 128 + the signal when a signal ended it."""
-    refresh, proc, old, stopped = True, None, {}, []
+    exited (a shell's children too), refreshed meanwhile. The handlers are set before cmd starts and restored only
+    after the release, so no stop signal ends this wrapper alone. Returns cmd's exit code, 128 + the signal when a
+    signal ended it."""
+    every, proc, stopped, refresh = ttl * 20, [], [], [True]  # a third of the ttl, in seconds
+
+    def signal_group(sig):
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc[0].pid, sig)
 
     def stop(sig, _):
         stopped.append(sig)
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(proc.pid, sig)
+        if proc:
+            signal_group(sig)
+
+    def keep():
+        if refresh[0]:
+            try:
+                holds.hold(target, by, None, ttl)
+            except ValueError as e:  # someone took it with --force: stop refreshing, let the command finish
+                print(f"hold: lost {target}: {e}", file=sys.stderr, flush=True)
+                refresh[0] = False
+
+    old = {s: signal.signal(s, stop) for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
     try:
-        proc = subprocess.Popen(cmd, start_new_session=True)
-        old = {s: signal.signal(s, stop) for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
+        proc.append(subprocess.Popen(cmd, start_new_session=True))
+        if stopped:  # stopped while it started
+            signal_group(stopped[-1])
         while True:
             try:
-                code = proc.wait(timeout=ttl * 20)  # a third of the ttl, in seconds
+                code = proc[0].wait(timeout=every)
                 return 128 - code if code < 0 else code
             except subprocess.TimeoutExpired:
-                if refresh:
-                    try:
-                        holds.hold(target, by, None, ttl)
-                    except ValueError as e:  # someone took it with --force: stop refreshing, let the command finish
-                        print(f"hold: lost {target}: {e}", file=sys.stderr, flush=True)
-                        refresh = False
+                keep()
     finally:
-        for s, h in old.items():
-            signal.signal(s, h)
-        if proc and proc.poll() is None:  # an error in this loop, not the command's end: stop it before releasing
+        if proc and proc[0].poll() is None:  # an error in this loop, not the command's end: stop it before releasing
             stopped.append(signal.SIGTERM)
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(proc.pid, signal.SIGTERM)
-            proc.wait()
-        # Stopped: the group's other processes may still be at work. Wait for them (killed after 60 s), then release.
-        # A command that ended by itself may leave processes on purpose; those are its business, not the hold's.
-        for _ in range(300 if stopped and proc else 0):
+            signal_group(signal.SIGTERM)
+            proc[0].wait()
+        # Stopped: the group's other processes may still be at work. Wait for them, refreshing (killed after 60 s),
+        # then release. A command that ended by itself may leave processes on purpose: its business, not the hold's.
+        start = last = time.monotonic()
+        while stopped and proc:
             try:
-                os.killpg(proc.pid, 0)
+                os.killpg(proc[0].pid, 0)
             except ProcessLookupError:
                 break
+            if time.monotonic() - start > 60:
+                signal_group(signal.SIGKILL)
+                break
+            if time.monotonic() - last >= every:
+                keep()
+                last = time.monotonic()
             time.sleep(0.2)
-        else:
-            if stopped and proc:
-                with contextlib.suppress(ProcessLookupError):
-                    os.killpg(proc.pid, signal.SIGKILL)
         with contextlib.suppress(ValueError):
             holds.release(target, by)
+        for s, h in old.items():
+            signal.signal(s, h)
 
 
 def cmd_hold(argv, release=False):

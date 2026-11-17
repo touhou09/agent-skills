@@ -77,15 +77,22 @@ assert not (locks / "res__browser.lock").exists(), "released when the command fa
 # a signal ended exits 128 + the signal, as a shell reports it.
 mark = home / "stopped"
 worker = ("import pathlib, signal, sys, time\n"
-          f"def stop(*_): time.sleep(2); pathlib.Path({str(mark)!r}).write_text('x'); sys.exit(0)\n"
+          "def stop(*_):\n"
+          "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+          f"    time.sleep(8); pathlib.Path({str(mark)!r}).write_text('x'); sys.exit(0)\n"
           "signal.signal(signal.SIGTERM, stop)\ntime.sleep(30)\n")
-proc = subprocess.Popen([sys.executable, str(PROG), "hold", "browser", "--", "sh", "-c", '"$0" -c "$1" & wait',
-                         sys.executable, worker], env=env, stdout=subprocess.PIPE, text=True)
+(locks / "holds.jsonl").unlink()
+proc = subprocess.Popen([sys.executable, str(PROG), "hold", "browser", "--ttl", "0.1", "--", "sh", "-c",
+                         '"$0" -c "$1" & wait', sys.executable, worker], env=env, stdout=subprocess.PIPE, text=True)
 assert proc.stdout.readline().startswith("browser held by term_a")
 time.sleep(1)
 proc.terminate()
-assert proc.wait(timeout=20) == 143 and mark.exists() and not (locks / "res__browser.lock").exists()
-released = fleet_time(json.loads((locks / "holds.jsonl").read_text().splitlines()[-1])["ts"])
-assert released >= mark.stat().st_mtime - 1, "released after the shell's child exited, not when the shell did"
+time.sleep(1)
+proc.terminate()  # a second stop while the group winds down: still forwarded, still released only at the end
+assert proc.wait(timeout=30) == 143 and mark.exists() and not (locks / "res__browser.lock").exists()
+events = [json.loads(l) for l in (locks / "holds.jsonl").read_text().splitlines()]
+assert [(e["ev"], e.get("note")) for e in events] == [("lock_acquired", None), ("lock_released", None)], \
+    "refreshed while the group wound down for longer than the 6 s ttl, never broken"
+assert fleet_time(events[-1]["ts"]) >= mark.stat().st_mtime - 1, "released after the shell's child exited"
 
 print("test_holds: ok")
