@@ -189,7 +189,7 @@ admitted, parked, approved, gate_opened, stop, resume, predicate_verified, confi
 land_check, yield, lane, lock_acquired, lock_released, reprioritized, signal.
 Tickets come from the tracker adapter (use-tracker/scripts/tracker.py), never from a tracker directly.
 """
-import contextlib, datetime as dt, fcntl, fnmatch, hashlib, heapq, json, os, pathlib, re, shlex, subprocess, sys, tempfile, time
+import contextlib, datetime as dt, fcntl, fnmatch, hashlib, heapq, json, os, pathlib, re, shlex, signal, subprocess, sys, tempfile, time
 
 TRACKER = pathlib.Path(__file__).resolve().parents[2] / "use-tracker" / "scripts" / "tracker.py"
 HOME = pathlib.Path(os.environ.get("PROGRAMS_HOME", "~/.claude/programs")).expanduser()
@@ -3081,10 +3081,76 @@ def fleet_parse(s):
     return t if t.tzinfo else t.astimezone()
 
 
+def hold_while(holds, target, by, ttl, cmd):
+    """Run cmd while holding target, refreshing the hold every third of its ttl so a use longer than the ttl is never
+    broken under it; released when cmd ends, however it ends. cmd runs in its own process group: a stop signal to this
+    wrapper (INT, TERM, HUP) goes to the whole group, and the hold is released only once every process in it has
+    exited (a shell's children too), refreshed meanwhile. The handlers are set before cmd starts and restored only
+    after the release, so no stop signal ends this wrapper alone. Returns cmd's exit code, 128 + the signal when a
+    signal ended it."""
+    every, proc, stopped, refresh = ttl * 20, [], [], [True]  # a third of the ttl, in seconds
+
+    def signal_group(sig):
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc[0].pid, sig)
+
+    def stop(sig, _):
+        stopped.append(sig)
+        if proc:
+            signal_group(sig)
+
+    def keep():
+        if refresh[0]:
+            try:
+                holds.hold(target, by, None, ttl)
+            except (ValueError, OSError) as e:  # taken with --force, or unwritable: stop refreshing, let it finish
+                print(f"hold: lost {target}: {e}", file=sys.stderr, flush=True)
+                refresh[0] = False
+
+    old = {s: signal.signal(s, stop) for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
+    try:
+        proc.append(subprocess.Popen(cmd, start_new_session=True))
+        if stopped:  # stopped while it started
+            signal_group(stopped[-1])
+        while True:
+            try:
+                code = proc[0].wait(timeout=every)
+                return 128 - code if code < 0 else code
+            except subprocess.TimeoutExpired:
+                keep()
+    finally:
+        if proc and proc[0].poll() is None:  # an error in this loop, not the command's end: stop it before releasing
+            stopped.append(signal.SIGTERM)
+            signal_group(signal.SIGTERM)
+            proc[0].wait()
+        # Stopped: the group's other processes may still be at work. Wait for them, refreshing (killed after 60 s),
+        # then release. A command that ended by itself may leave processes on purpose: its business, not the hold's.
+        start = last = time.monotonic()
+        while stopped and proc:
+            try:
+                os.killpg(proc[0].pid, 0)
+            except ProcessLookupError:
+                break
+            if time.monotonic() - start > 60:
+                signal_group(signal.SIGKILL)
+                break
+            if time.monotonic() - last >= every:
+                keep()
+                last = time.monotonic()
+            time.sleep(0.2)
+        with contextlib.suppress(ValueError, OSError):  # the handlers are restored whatever the release does
+            holds.release(target, by)
+        for s, h in old.items():
+            signal.signal(s, h)
+
+
 def cmd_hold(argv, release=False):
     import holds
-    target = argv[0] if not argv[0].startswith("--") else None
-    by = opt(argv, "--by") or os.environ.get("ORCA_TERMINAL_HANDLE") or os.environ.get("USER") or "unknown"
+    cut = argv.index("--") if "--" in argv else len(argv)
+    argv, cmd = argv[:cut], argv[cut + 1:]
+    target = argv[0] if argv and not argv[0].startswith("--") else None
+    # Never a login name: every unit without a handle would share it and pass as refreshing one another's hold.
+    by = opt(argv, "--by") or os.environ.get("ORCA_TERMINAL_HANDLE")
     try:
         if not release and "--list" in argv:
             rows = holds.current()
@@ -3095,14 +3161,21 @@ def cmd_hold(argv, release=False):
             if not rows and "--json" not in argv:
                 print("nothing held")
         elif not target:
-            sys.exit("usage: orch hold <resource> [--note TEXT] [--ttl MIN] [--by WHO] | hold --list [--json] | "
+            sys.exit("usage: orch hold <resource> [--note TEXT] [--ttl MIN] [--by WHO] [-- <command…>] | hold --list [--json] | "
                      "release <resource> [--by WHO] [--force]")
+        elif not by:
+            sys.exit("no terminal handle to own the hold: pass --by <a name only this unit uses> (a subagent's or script's own)")
         elif release:
             held = holds.release(target, by, force="--force" in argv)
             print(f"released {target}" if held else f"{target} was not held")
         else:
-            row = holds.hold(target, by, opt(argv, "--note"), int(opt(argv, "--ttl", holds.TTL_MIN)))
-            print(f"{target} held by {row['by']} (ttl {row['ttl_min']}m)")
+            ttl = float(opt(argv, "--ttl", holds.TTL_MIN))
+            if not 0.1 <= ttl <= 10080:  # under 6 s a refresh (every third, at least 2 s) cannot beat it; nan fails too
+                sys.exit("--ttl is minutes from 0.1 to 10080")
+            row = holds.hold(target, by, opt(argv, "--note"), ttl)
+            print(f"{target} held by {row['by']} (ttl {row['ttl_min']:g}m)", flush=True)
+            if cmd:
+                sys.exit(hold_while(holds, target, by, ttl, cmd))
     except (ValueError, OSError) as e:
         sys.exit(str(e))
 
