@@ -1051,18 +1051,22 @@ def parse_dialog(lines):
     # No rule: a dialog taller than the screen scrolled its top off, so request and lines start at the screen's top.
     top = max((i for i in range(q) if RULE_RE.fullmatch(body[i])), default=-1)
     return {"question": body[q], "request": [l for l in body[top + 1:q] if l], "lines": body[top + 1:],
-            "ruled": top >= 0, "from_question": body[q:],
+            "ruled": top >= 0,
             # "Yes, and switch to auto mode · auto mode handles these prompts for you": the label is before " · "
             "options": [(d, label.split(" · ")[0].strip()) for d, label in options]}
 
 
+BLINK_RE = re.compile(r"^⏺\s*")  # the pending tool's bullet, drawn and erased between reads (measured)
+
+
 def same_dialog(a, b):
-    """Whether two reads show one dialog unchanged. With its top rule on screen in both, the whole dialog is compared.
-    Without, nothing marks where it starts and the lines above may be the pending tool's blinking ⏺: only the question,
-    the options with their cursor, and the footer are compared. The caller checks each read against the record."""
-    if a["ruled"] and b["ruled"]:
+    """Whether two reads show one dialog unchanged. With its top rule on screen in both, the dialog is compared whole.
+    With it scrolled off in both, nothing marks where the dialog starts, so every line on screen is compared, the
+    request included, with only a leading blinking ⏺ dropped. A rule in one read only means the screen moved: refused.
+    The caller also checks each read against the record."""
+    if a["ruled"] or b["ruled"]:
         return a == b
-    return a["from_question"] == b["from_question"]
+    return [BLINK_RE.sub("", l) for l in a["lines"]] == [BLINK_RE.sub("", l) for l in b["lines"]]
 
 
 def prompt_needles(rec):
