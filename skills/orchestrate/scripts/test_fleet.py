@@ -103,6 +103,22 @@ st = f.tick(force=True)
 ss = {s["id"]: s for s in st["sessions"]}
 assert ss["wt-export"]["unread"] == 3 and not items(st, "ci_failed"), (ss["wt-export"], items(st, "ci_failed"))
 badges_agree(st)
+# A skill's item is dismissed for that round only: added again under the same key after the dismiss, it shows again.
+real_utcnow = fleet.utcnow
+fleet.utcnow = lambda: now  # add, dismiss and the next add all in one second: a round is its add, not its time
+fleet.inbox_add("run_command", "Run the setup line", command="echo setup", key="setup:demo")
+fleet.dismiss(f, "ext:setup:demo")
+fleet.utcnow = real_utcnow
+assert "ext:setup:demo" not in {i["key"] for i in f.tick(force=True)["items"]}, "dismissed and not added again: hidden"
+fleet.utcnow = lambda: now  # the same second as the dismiss: the round dismissed is told by its own add time
+fleet.inbox_add("run_command", "Run the setup line", command="echo setup", key="setup:demo")
+fleet.utcnow = real_utcnow
+assert "ext:setup:demo" in {i["key"] for i in f.tick(force=True)["items"]}, "added again after the dismiss: shown"
+f.mem["dismissed_rounds"]["ext:setup:demo"] = 10**6  # a later round, saved meanwhile by a concurrent dismiss
+fleet.dismiss(f, "ext:setup:demo")
+assert f.mem["dismissed_rounds"]["ext:setup:demo"] == 10**6, "a slower dismiss never moves the round back"
+fleet.inbox_resolve("setup:demo")
+st = f.tick(force=True)
 
 # Needs you order: what only the owner settles, then a merge call waiting on them, then the rest; newest first in each.
 ranks = [fleet.needs_rank(i) for i in items(st)]
