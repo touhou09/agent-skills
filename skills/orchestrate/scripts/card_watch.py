@@ -50,14 +50,23 @@ def auth_line(tail):
     """The newest auth or goal-stop message, unless an assistant turn (⏺) or a live spinner came after it.
 
     Only the lines above the input box count: the status area below it lists agents with the same ⏺ glyph."""
-    box = max((i for i, l in enumerate(tail) if l.strip().startswith("❯")), default=len(tail))
-    for l in reversed(tail[:box]):
+    for l in reversed(above_box(tail)):
         s = l.strip()
         if AUTH.match(GLYPHS.sub("", s)):
             return GLYPHS.sub("", s)
         if s.startswith("⏺") or SPINNER.match(l):
             return None
     return None
+
+
+def above_box(tail):
+    box = max((i for i, l in enumerate(tail) if l.strip().startswith("❯")), default=len(tail))
+    return tail[:box]
+
+
+def worked(tail):
+    """An assistant line (⏺) above the input box: the agent has taken a turn, not only been given `/goal`."""
+    return any(l.strip().startswith("⏺") for l in above_box(tail))
 
 
 def under_goal(t, tail):
@@ -156,13 +165,17 @@ def check_start(handle, read, listing, within, interval, clock=time.time, sleep=
     goal = under_goal(t, tail)
     if goal and (t.get("lastOutputAt") or 0) > start_ms:
         return [f"STARTED {name}: /goal active, output since the check began"]
+    if goal and worked(tail):  # it began before the check and now waits quietly (a background wait)
+        return [f"STARTED {name}: /goal active, work on screen from before the check"]
     if was_goal and not goal and auth_line(tail):  # a goal cleared by a 403 in the last two quiet minutes
         return [f'STUCK {name} (auth): "{auth_line(tail)}"', f"  orca terminal read --terminal {handle} --screen"]
     if was_goal and not goal:
         return [f"ENDED {name}: /goal was active and is off now (met or cleared); read its screen before starting it again",
                 f"  orca terminal read --terminal {handle} --screen"]
     last = next((l.strip() for l in reversed(tail) if l.strip()), "")
-    return [f'STUCK {name} (not started): no /goal active with new output; last line "{last}"',
+    why = ("/goal active but no work on screen and no output since the check began" if goal
+           else "no /goal active with new output")
+    return [f'STUCK {name} (not started): {why}; last line "{last}"',
             f"  orca terminal read --terminal {handle} --screen"]
 
 
