@@ -107,11 +107,11 @@ badges_agree(st)
 real_utcnow = fleet.utcnow
 fleet.utcnow = lambda: now - dt.timedelta(minutes=2)
 fleet.inbox_add("run_command", "Run the setup line", command="echo setup", key="setup:demo")
-fleet.utcnow = lambda: now - dt.timedelta(minutes=1)
+fleet.utcnow = lambda: now
 fleet.dismiss(f, "ext:setup:demo")
 fleet.utcnow = real_utcnow
 assert "ext:setup:demo" not in {i["key"] for i in f.tick(force=True)["items"]}, "dismissed and not added again: hidden"
-fleet.utcnow = lambda: now
+fleet.utcnow = lambda: now  # the same second as the dismiss: the round dismissed is told by its own add time
 fleet.inbox_add("run_command", "Run the setup line", command="echo setup", key="setup:demo")
 fleet.utcnow = real_utcnow
 assert "ext:setup:demo" in {i["key"] for i in f.tick(force=True)["items"]}, "added again after the dismiss: shown"

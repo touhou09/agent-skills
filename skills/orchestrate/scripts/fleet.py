@@ -2333,19 +2333,21 @@ def press_option(sync, rec, action):
 
 def hidden(item, dismissed):
     """Dismissed on the page. A skill's item (`ext:`) is hidden for the round it was dismissed in only: skills add an
-    alert again under the same key (a pressure alarm, a setup request), and one added after the dismiss shows again."""
+    alert again under the same key (a pressure alarm, a setup request), and one added since shows again. dismiss()
+    keeps that round's own add time, so a new add in the same second as the click still counts as new."""
     at = dismissed.get(item["key"])
     if at is None:
         return False
     if item["key"].startswith("ext:"):
-        added, gone = parse(item.get("at")), parse(at)
-        return not (added and gone and added > gone)
+        added, seen = parse(item.get("at")), parse(at)
+        return not (added and seen and added > seen)
     return True
 
 
 def dismiss(fleet, key):
+    shown = next((i["at"] for i in external_items() if i["key"] == key), None) if key.startswith("ext:") else None
     with fleet.lock:
-        fleet.mem.setdefault("dismissed", {})[key] = iso(utcnow())
+        fleet.mem.setdefault("dismissed", {})[key] = shown or iso(utcnow())
         st = fleet.mem.get("sticky", {}).get(key)
         if st:
             st["open"] = False
