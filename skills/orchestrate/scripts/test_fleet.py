@@ -756,6 +756,8 @@ assert len(posts) == 1 and obs in [d["id"] for d in fleet.open_decisions()], "re
 world.worktrees[0]["agents"][0]["state"] = "working"
 ok.calls.clear()
 assert f"{obs}  answered on the dashboard: done; open until its effect shows" in decide("list")[1]
+code, _, err = decide("done", obs, "--answer", "not yet")
+assert code == 1 and err == f"{obs} is already answered with done, and that answer reached the coordinator", err
 assert decide("done", obs) == (0, f"{obs} done", "")
 saved = json.loads((state_dir / "decisions.json").read_text())["decisions"][obs]
 assert saved["status"] == "done" and saved["answer"] == "done", saved

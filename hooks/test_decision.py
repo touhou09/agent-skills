@@ -60,6 +60,11 @@ d7 = fleet.decision_add("Approve the login", options=["done"], handle="term_coor
 text = hook(f"decision {d7}: done")
 assert status(d7)["status"] == "open" and f"{d7} (Approve the login)" in text and "It stays open" in text, text
 assert status(d7)["answer"] == "done", "the answer is recorded, so nobody asks the human again"
+d9 = fleet.decision_add("Restart the service", options=["done", "failed"], handle="term_coord", observe=True)["id"]
+fleet.decision_answer(d9, "done")  # a page answer still waiting for its relay
+assert hook(f"{d9} failed") and status(d9)["answer"] == "failed", "a typed correction replaces it"
+assert fleet.pending_relays() == [] and fleet.decision_reopen(d9)[0] == 409, "the coordinator has it: no relay, no undo"
+fleet.decision_close(d9, "dropped")
 fleet.decision_reopen(d7)  # not a page answer: no undo applies
 assert status(d7)["answer"] == "done"
 fleet.decision_close(d7, "dropped")

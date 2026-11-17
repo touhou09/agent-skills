@@ -2465,6 +2465,9 @@ def decision_close(did, status, answer=None, relay=False):
                 raise ValueError(f"{did} is already answered ({answered}); it stays open until its effect shows")
             d.update(answer=new, answered_at=iso(utcnow()), delivered=False, rev=os.urandom(6).hex())
         elif d.get("status") == "open":
+            reached = d.get("delivered") is True or d.get("mailed") or d.get("mail_request")
+            if status == "done" and not relay and answered is not None and new not in (None, answered) and reached:
+                raise ValueError(f"{did} is already answered with {answered}, and that answer reached the coordinator")
             d.update(status=status, answer=new if new is not None else answered, closed_at=iso(utcnow()))
             if relay:
                 d.update(delivered=False, rev=os.urandom(6).hex())  # names this answer for the page's undo
@@ -2488,11 +2491,12 @@ def decision_close(did, status, answer=None, relay=False):
 
 def decision_note(did, answer):
     """A typed answer to an open `observe` decision: recorded, not relayed (it came from the coordinator's own
-    terminal), and the decision stays open for its `done`."""
+    terminal), and the decision stays open for its `done`. It replaces a page answer not sent yet, and marks the
+    answer delivered, so no relay or undo follows; a page answer already mailed is kept, as the coordinator read it."""
     def note(store):
         d = store.get("decisions", {}).get(did) or {}
-        if d.get("status") == "open" and d.get("observe") and d.get("answer") is None:
-            d.update(answer=mask(answer, DECISION_ANSWER_MAX), answered_at=iso(utcnow()))
+        if d.get("status") == "open" and d.get("observe") and not (d.get("mailed") or d.get("mail_request")):
+            d.update(answer=mask(answer, DECISION_ANSWER_MAX), answered_at=iso(utcnow()), delivered=True)
     change_decisions(note)
 
 
