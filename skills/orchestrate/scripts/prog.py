@@ -688,6 +688,11 @@ def land_order(events, rows, cfg, when, stacks=None, deps=None):
                 top = max(u["pr"] for u in upper if u and own[u["pr"]] not in ("blocked", "gone"))
                 e["state"], e["reasons"] = "waiting", [f"lands with its stack from #{top}"] + e["reasons"]
                 continue
+            # A lower layer waiting (on its gate, on a dependency) holds the whole unit: waiting, so it takes no lane.
+            held = [b for b in live[:i] if own.get(b) == "waiting"]
+            if held and e["state"] not in ("blocked", "gone"):
+                e["state"], e["reasons"] = "waiting", [f"stack layer #{held[0]} is waiting"] + e["reasons"]
+                continue
             unready = [f"#{b} {own.get(b, 'not in the program')}" for b in live[:i] if own.get(b) != "ready"]
             if unready and e["state"] == "ready":
                 e["state"], e["reasons"] = "catching_up", [f"stack layer {', '.join(unready)}"] + e["reasons"]
@@ -1710,6 +1715,21 @@ def base_ci_hint(repo, base):
             f" there; start it with gh workflow run <ci workflow file> --repo {repo} --ref {base} and watch that run")
 
 
+def approve_gates(p, prs):
+    """Record `approved` for each of prs whose open gate the human resolved as land; {pr: resolution} of the ones
+    resolved any other way. A gate still pending is left to land_order, which holds its PR."""
+    events, held = p.events(), {}
+    for n in prs:
+        s = pr_state(events).get(n, {})
+        if "gate_opened" in s and not {"approved", "landed"} & s.keys():
+            res = gate_resolution(p.cfg, events, n)
+            if res == "land":
+                p.append("approved", pr=n, note="orca gate resolved: land")
+            elif res:
+                held[n] = res
+    return held
+
+
 def attempt(p, pr, klass, onto_lower=False):
     """One pass: returns (exit_code, message)."""
     events, cfg, repo = p.events(), p.cfg, p.cfg["repo"]
@@ -1718,23 +1738,20 @@ def attempt(p, pr, klass, onto_lower=False):
         return 0, f"#{pr} already landed as {st['landed'].get('sha', '')[:8]}"
     if stopped(events):
         return 1, "STOP line active: nothing lands"
-    # Gates under either policy (under autonomous only a gated PR has one), for this PR and every other gated one: a
-    # stack's top merges its lower layers, so theirs must read approved too. One still open makes land_order hold it.
-    gated = [n for n, s in pr_state(events).items() if "gate_opened" in s and not {"approved", "landed"} & s.keys()]
-    for n in gated:
-        resolution = gate_resolution(cfg, events, n)
-        if resolution == "land":
-            p.append("approved", pr=n, note="orca gate resolved: land")
-        elif resolution and n == pr:
-            close_gate_task(p, pr, "failed")
-            return 1, f"human-gate: the user resolved the gate as '{resolution}'"
-    if gated:
-        events, st = p.events(), pr_state(p.events()).get(pr, {})
+    # Gates under either policy (under autonomous only a gated PR has one): this PR's, then below those of the stack
+    # layers its merge takes along. One still open makes land_order hold it, and with it every layer above.
+    held = approve_gates(p, [pr])
+    if pr in held:
+        close_gate_task(p, pr, "failed")
+        return 1, f"human-gate: the user resolved the gate as '{held[pr]}'"
+    events, st = p.events(), pr_state(p.events()).get(pr, {})
     main = main_state(events)
     if main == "red" and klass != "main-fix":
         return 1, "safety stop: main is red; only the repair lands (--class main-fix)"
     rows = open_rows(repo)
     stacks = repo_stacks(repo)
+    approve_gates(p, next((m[:m.index(pr)] for m in stacks.values() if pr in m), []))
+    events = p.events()
     order = land_order(events, rows, cfg, dt.datetime.now(dt.timezone.utc), stacks, orca_deps(cfg["run"]))
     stacked = any(pr in members for members in stacks.values())
     me = next((e for e in order if e["pr"] == pr), None)
@@ -1766,6 +1783,7 @@ def attempt(p, pr, klass, onto_lower=False):
     if on_hold(events, pr):
         return 1, f"#{pr} is on hold (record parked); `orch record {p.slug} admitted --pr {pr}` releases it"
     if me["state"] == "waiting":
+        ExclusiveLock(p, me["base"] or "main").release(pr)  # a gate opened after it took the lane: free it meanwhile
         if st.get("yield", {}).get("note") != me["reasons"][0]:
             p.append("yield", pr=pr, note=me["reasons"][0])
         return 2, f"yield: {me['reasons'][0]}"

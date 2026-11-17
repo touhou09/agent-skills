@@ -15,6 +15,8 @@ elif verb == ["gate-create"]:
     res = {"gateId": "gate_g", "taskId": "task_g", "status": "pending"}
     st["gates"] = [{"id": "gate_g", "task_id": "task_g", "status": "pending", "resolution": None}]
 elif verb == ["gate-list"]:
+    if st.get("gate_list_down"):
+        sys.exit("orca: gate-list failed")
     res = {"gates": st.get("gates", [])}
 elif verb == ["task-update"]:
     st["task_updates"] = st.get("task_updates", []) + [sys.argv[1:]]
@@ -702,5 +704,31 @@ st["prs"]["62"]["state"] = "CLOSED"
 code, out = prog(env, "land", "t", "--pr", "62")
 assert code == 1 and "CLOSED" in out, out
 assert json.loads((d / "state.json").read_text())["task_updates"][-1][3:6] == ["task_g", "--status", "failed"]
+# Another PR's gate is not this PR's business: Orca failing to read it does not stop this land.
+d, env = setup({"64": pr(64), "65": pr(65, files=["src/x.py"])})
+verdict(d, 64, "T-64")
+verdict(d, 65, "T-65")
+assert prog(env, "gate", "t", "--pr", "64")[0] == 0
+st = json.loads((d / "state.json").read_text())
+st["gate_list_down"] = True
+(d / "state.json").write_text(json.dumps(st))
+code, out = prog(env, "land", "t", "--pr", "65")
+assert code == 0 and "landed #65" in out, out
+# An exclusive stack whose lower layer waits on its gate waits whole: its top takes no lane. A PR that took the lane
+# before its gate was opened gives it back while it waits.
+d, env = setup({"66": pr(66, stacked=True, files=["compose.yaml"]),
+                "67": pr(67, base="b66", stacked=True, files=["compose.yaml"])}, stacks=[[66, 67]])
+verdict(d, 66, "T-66")
+verdict(d, 67, "T-67")
+assert prog(env, "gate", "t", "--pr", "66")[0] == 0
+code, out = prog(env, "land", "t", "--pr", "67")
+assert code == 2 and "#66" in out and not list((d / "programs" / "_locks").glob("*.lock")), out
+d, env = setup({"68": pr(68, files=["compose.yaml"], behind=1)})
+verdict(d, 68, "T-68")
+code, out = prog(env, "land", "t", "--pr", "68")
+assert code == 3 and "you hold the exclusive lane" in out and list((d / "programs" / "_locks").glob("*.lock")), out
+assert prog(env, "gate", "t", "--pr", "68")[0] == 0
+code, out = prog(env, "land", "t", "--pr", "68")
+assert code == 2 and not list((d / "programs" / "_locks").glob("*.lock")), out
 
 print("prog.py land against fake gh: all pass")
