@@ -1859,7 +1859,7 @@ class Fleet:
                 items.append(it)
         dismissed, raw_keys = mem.setdefault("dismissed", {}), {it["key"] for it in items}
         items = [it if it.get("project") else {**it, "project": (sessions.get(it.get("session")) or {}).get("project")}
-                 for it in items if it["key"] not in dismissed]
+                 for it in items if not hidden(it, dismissed)]
         import tidy
         held = held_prs(read_json(state_dir() / "board.json", {}) or {}, tidy.closed(),
                         {k: e["detail"] for k, e in self.prs.items() if e.get("detail")}, now,
@@ -2329,6 +2329,18 @@ def press_option(sync, rec, action):
     if prompt_verdict(after, rec)[0]:
         return "sent, but the dialog is still on screen", key
     return None, key
+
+
+def hidden(item, dismissed):
+    """Dismissed on the page. A skill's item (`ext:`) is hidden for the round it was dismissed in only: skills add an
+    alert again under the same key (a pressure alarm, a setup request), and one added after the dismiss shows again."""
+    at = dismissed.get(item["key"])
+    if at is None:
+        return False
+    if item["key"].startswith("ext:"):
+        added, gone = parse(item.get("at")), parse(at)
+        return not (added and gone and added > gone)
+    return True
 
 
 def dismiss(fleet, key):
