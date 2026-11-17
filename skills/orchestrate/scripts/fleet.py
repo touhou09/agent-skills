@@ -189,7 +189,10 @@ def run_json(cmd, timeout=30):
 def orca(*args, timeout=30):
     out = run_json(["orca", *args, "--json"], timeout)
     if isinstance(out, dict) and out.get("ok") is False:
-        raise SourceError(mask(json.dumps(out.get("error"))[:300]))
+        err = json.dumps(out.get("error"))
+        # A send whose reply was lost names its request deep in a long error; a replay needs it, so it goes first.
+        rid = re.search(r'"orchestrationRequestId":\s*"([\w-]+)"', err)
+        raise SourceError((f"orchestrationRequestId {rid.group(1)}: " if rid else "") + mask(err[:300]))
     return out.get("result", out) if isinstance(out, dict) else {}
 
 
@@ -2463,23 +2466,29 @@ def mail_decision(d, handle, runs, call=None):
     """Send the answer to the coordinator's mailbox as a `question` (the type `orch wait` wakes on) and mark it mailed.
     The payload names the decision, so the page never lists this mail as a question for the human. Sent --from the
     coordinator's own terminal: the server runs in none (under launchd), and Orca refuses a send whose caller it
-    cannot tell (no_active_sender_terminal). The Run list is read again first: the collector's copy can be two minutes
-    old, from before a `run-use`. A send whose reply was lost names its orchestrationRequestId; the next try replays it
-    with --retry-request rather than sending a second mail."""
+    cannot tell (no_active_sender_terminal). The mailbox is the Run `run-current` says the terminal binds now (the
+    collector's run-list copy can be stale), else decision_mailbox. A send whose reply was lost names its
+    orchestrationRequestId; the next try replays it, to the same mailbox, with --retry-request rather than sending a
+    second mail."""
     call = call or orca
-    with contextlib.suppress(SourceError):
-        listed = call("orchestration", "run-list", "--full").get("runs", [])
-        runs = {**(runs or {}), "runs": [r for r in listed if not r.get("legacy") and r.get("id") != "run_legacy_local"]}
+    box = d.get("mail_to")  # a replay repeats the first request's arguments, or Orca refuses it (request_mismatch)
+    if not box:
+        try:  # the binding as Orca has it now; run-list's coordinator handle can be stale
+            bound = call("orchestration", "run-current", "--from", handle).get("runId")
+            box = f"run:{bound}" if bound else decision_mailbox(handle, {"workers": (runs or {}).get("workers")})
+        except SourceError:
+            box = decision_mailbox(handle, runs or {})
     retry = ["--retry-request", d["mail_request"]] if d.get("mail_request") else []
     try:
-        call("orchestration", "send", "--from", handle, "--to", decision_mailbox(handle, runs or {}), "--type", "question",
+        call("orchestration", "send", "--from", handle, "--to", box, "--type", "question",
              "--subject", f"decision {d['id']} answered on the dashboard", "--body", f"decision {d['id']}: {d.get('answer')}",
              "--payload", json.dumps({"decision": d["id"]}), *retry)
     except SourceError as e:
         rid = re.search(r"orchestrationRequestId\W+([\w-]+)", str(e))
         # The CLI timed out with no request named: the mail may have arrived, so it is never sent again (the
         # terminal line still follows). Any other failure is retried on the next collect.
-        mark = {"mail_request": rid.group(1)} if rid else {"mailed": "unconfirmed"} if "timed out" in str(e) else None
+        mark = ({"mail_request": rid.group(1), "mail_to": box} if rid
+                else {"mailed": "unconfirmed"} if "timed out" in str(e) else None)
         if mark:
             change_decisions(lambda store: (store.get("decisions", {}).get(d["id"]) or {}).update(mark))
         return False
