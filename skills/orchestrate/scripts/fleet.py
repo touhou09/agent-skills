@@ -1048,10 +1048,21 @@ def parse_dialog(lines):
             return None
     if not options:
         return None
+    # No rule: a dialog taller than the screen scrolled its top off, so request and lines start at the screen's top.
     top = max((i for i in range(q) if RULE_RE.fullmatch(body[i])), default=-1)
     return {"question": body[q], "request": [l for l in body[top + 1:q] if l], "lines": body[top + 1:],
+            "ruled": top >= 0, "from_question": body[q:],
             # "Yes, and switch to auto mode · auto mode handles these prompts for you": the label is before " · "
             "options": [(d, label.split(" · ")[0].strip()) for d, label in options]}
+
+
+def same_dialog(a, b):
+    """Whether two reads show one dialog unchanged. With its top rule on screen in both, the whole dialog is compared.
+    Without, nothing marks where it starts and the lines above may be the pending tool's blinking ⏺: only the question,
+    the options with their cursor, and the footer are compared. The caller checks each read against the record."""
+    if a["ruled"] and b["ruled"]:
+        return a == b
+    return a["from_question"] == b["from_question"]
 
 
 def prompt_needles(rec):
@@ -2316,8 +2327,10 @@ def press_option(sync, rec, action):
             d, why = prompt_verdict(second, rec)
             if not d:
                 return why, None
-            # Only the dialog is compared: above it the pending tool's ⏺ blinks between reads (measured).
-            if d != parse_dialog(first):
+            # Only the dialog is compared: above it the pending tool's ⏺ blinks between reads (measured). Both reads
+            # must show the recorded request, since a dialog with no rule on screen is compared from its question down.
+            d1 = prompt_verdict(first, rec)[0]
+            if not d1 or not same_dialog(d1, d):
                 return "the dialog changed between two reads (someone may be answering it)", None
             digit = option_for(d, action)
             if not digit:

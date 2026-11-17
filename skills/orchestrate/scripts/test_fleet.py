@@ -436,11 +436,21 @@ MOVED = BASH[:6] + ["   1. Yes", " ❯ 2. " + BASH[7].strip()[3:]] + BASH[8:]  #
 arm(bash_rec)
 fs = FakeSync(["  Creating out.txt"] + BASH, ["⏺ Creating out.txt"] + BASH, IDLE)
 assert fleet.answer_prompt("wt-docs", "p-bash", "approve", sender=fs)[1]["ok"] and fs.sent[0][-1] == "1"
+# A dialog taller than the screen has its top rule scrolled off, so nothing marks where it starts: the lines above
+# its question are then not compared, only the question, the options and the footer, and both reads must show the
+# recorded request.
+TALL = BASH[1:]
+arm(bash_rec)
+fs = FakeSync(["  Creating out.txt"] + TALL, ["⏺ Creating out.txt"] + TALL, IDLE)
+assert fleet.answer_prompt("wt-docs", "p-bash", "approve", sender=fs)[1]["ok"] and fs.sent[0][-1] == "1"
+OTHER = [l.replace("out.txt", "other.txt") for l in TALL]  # the same dialog for another command
 refusals = [  # (screens, action, reason): nothing is pressed
     ((IDLE,), "approve", "no permission dialog on screen"),
     ((QUESTION,), "approve", "no permission dialog on screen"),
     ((HOOK_ASK,), "approve", "the dialog on screen is not the recorded request"),
     ((BASH, MOVED), "approve", "the dialog changed between two reads (someone may be answering it)"),
+    ((TALL, MOVED[1:]), "approve", "the dialog changed between two reads (someone may be answering it)"),
+    ((OTHER, TALL), "approve", "the dialog changed between two reads (someone may be answering it)"),
     (([],), "deny", "not a connected, writable Claude terminal"),
 ]
 for screens, action, reason in refusals:
@@ -465,7 +475,7 @@ assert fleet.answer_prompt("wt-docs", "p-bash", "open") == (200, {"ok": True, "r
 fleet.orca = real_orca
 assert opened == [("terminal", "switch", "--terminal", "term_docs")]
 rows = [json.loads(l) for l in (state_dir / "sends.jsonl").read_text().splitlines()[8:]]
-assert len(rows) == 15 and all(r["text"].startswith("prompt ") and "code" in r for r in rows), rows
+assert len(rows) == 18 and all(r["text"].startswith("prompt ") and "code" in r for r in rows), rows
 
 # Adoption: a dry run by default, a write only with the config flag, and undo restores the logged previous value.
 calls = []
