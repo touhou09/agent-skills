@@ -40,7 +40,7 @@ def orca_on_path():
     shutil.which("orca") find it. A no-op when PATH already finds it or there is none."""
     p = orca_cli()
     if p and not shutil.which("orca"):
-        os.environ["PATH"] = os.pathsep.join(filter(None, (os.environ.get("PATH"), os.path.dirname(p))))
+        os.environ["PATH"] = os.pathsep.join(filter(None, (os.environ.get("PATH", os.defpath), os.path.dirname(p))))
 
 
 REPO = pathlib.Path(__file__).resolve().parents[1]

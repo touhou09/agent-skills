@@ -192,6 +192,12 @@ def test_orca_cli():
           == str(home / ".orca" / "cli" / "bin" / "orca"))
     check("no CLI anywhere is None", found() == "None")
     check("orca on PATH comes first", found(PATH=f"{other.parent}:/usr/bin:/bin", HOME=str(home)) == str(other))
+    code = (f"import os, sys; sys.path.insert(0, {str(HERE)!r}); import sync; sync.orca_on_path(); "
+            "print(os.environ['PATH'])")
+    got = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True,
+                         env={"HOME": str(home)}).stdout.strip()
+    check("with no PATH set, the default search path stays and the CLI's directory follows it",
+          got == f"{os.defpath}:{home / '.orca' / 'cli' / 'bin'}", got)
     shutil.rmtree(tmp)
 
 
