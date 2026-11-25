@@ -23,11 +23,29 @@ The checkout is loaded live through CLAUDE_CODE_PLUGIN_DIRS (docs/platform.md), 
 every session reads. It never rebases, merges, forces or commits: anything but a fast-forward or a push of
 signed commits stops it, and the reason goes to the state file and a desktop notification.
 """
-import contextlib, datetime, fcntl, json, os, pathlib, platform, re, subprocess, sys, time
+import contextlib, datetime, fcntl, json, os, pathlib, platform, re, shutil, subprocess, sys, time
+
+
+def orca_cli():
+    """The Orca CLI's path, or None. Orca installs it at ~/.orca/cli/bin/orca and exports ORCA_CLI_COMMAND only in
+    its own terminals, so a scheduled job (an Orca automation's precheck, launchd) often has a PATH without it."""
+    for p in (shutil.which("orca"), os.environ.get("ORCA_CLI_COMMAND"), os.path.expanduser("~/.orca/cli/bin/orca")):
+        if p and os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+    return None
+
+
+def orca_on_path():
+    """Put the Orca CLI's directory on this process's PATH, so `orca` by bare name (here and in every child) and
+    shutil.which("orca") find it. A no-op when PATH already finds it or there is none."""
+    p = orca_cli()
+    if p and not shutil.which("orca"):
+        os.environ["PATH"] = os.pathsep.join(filter(None, (os.environ.get("PATH", os.defpath), os.path.dirname(p))))
+
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 STATE = pathlib.Path(os.environ.get("AGENT_SKILLS_STATE", "~/.local/state/agent-skills")).expanduser()
-ORCA = os.environ.get("SKILLS_SYNC_ORCA", "orca")
+ORCA = os.environ.get("SKILLS_SYNC_ORCA") or orca_cli() or "orca"
 BRANCH = "main"
 RELOAD = {"skills": "/reload-skills", "plugins": "/reload-plugins"}
 SETTLE_S = float(os.environ.get("SKILLS_SYNC_SETTLE_S", "1.5"))
