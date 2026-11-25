@@ -2240,6 +2240,12 @@ def load_sync():
         return None
 
 
+# dash.py's server (a LaunchAgent), patrol and board import this module and call `orca` by bare name; a PATH
+# without the Orca CLI gets its directory here.
+if _sync := load_sync():
+    _sync.orca_on_path()
+
+
 def send(session_id, text, handle=None, sender=None):
     """Type one line into a fleet session's agent terminal. Returns (status, body) for the HTTP reply.
     Only agent terminals of sessions in the current state are reachable; every attempt is logged."""

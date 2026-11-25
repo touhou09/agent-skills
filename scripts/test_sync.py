@@ -171,6 +171,30 @@ def test_sync():
     shutil.rmtree(tmp)
 
 
+def test_orca_cli():
+    """Scheduled jobs (Orca automations, launchd) start with a PATH that lacks the Orca CLI; it is still found."""
+    tmp = pathlib.Path(tempfile.mkdtemp())
+    home, other = tmp / "home", tmp / "elsewhere" / "orca"
+    for f in (home / ".orca" / "cli" / "bin" / "orca", other):
+        f.parent.mkdir(parents=True)
+        f.write_text("#!/bin/sh\n")
+        f.chmod(0o755)
+
+    def found(**env):
+        code = f"import sys; sys.path.insert(0, {str(HERE)!r}); import sync; print(sync.orca_cli())"
+        return subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True,
+                              env={"PATH": "/usr/bin:/bin", "HOME": str(tmp / "nohome"), **env}).stdout.strip()
+
+    check("ORCA_CLI_COMMAND names it when PATH lacks it", found(ORCA_CLI_COMMAND=str(other)) == str(other))
+    check("~/.orca/cli/bin/orca is found when PATH and ORCA_CLI_COMMAND lack it",
+          found(HOME=str(home)) == str(home / ".orca" / "cli" / "bin" / "orca"))
+    check("a missing ORCA_CLI_COMMAND falls through to ~/.orca", found(HOME=str(home), ORCA_CLI_COMMAND=str(tmp / "x"))
+          == str(home / ".orca" / "cli" / "bin" / "orca"))
+    check("no CLI anywhere is None", found() == "None")
+    check("orca on PATH comes first", found(PATH=f"{other.parent}:/usr/bin:/bin", HOME=str(home)) == str(other))
+    shutil.rmtree(tmp)
+
+
 def test_reload_kind():
     check("docs need no reload", sync.reload_kind(["docs/a.md", "README.md"]) is None)
     check("scripts and references are read live", sync.reload_kind(
@@ -379,6 +403,7 @@ def test_close_setup():
 
 
 if __name__ == "__main__":
+    test_orca_cli()
     test_reload_kind()
     test_classify()
     test_agent_phase()

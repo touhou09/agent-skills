@@ -42,6 +42,12 @@ within reap.load_cooldown_minutes (default 60). schedule prints the `orca automa
 """
 import contextlib, datetime as dt, functools, hashlib, json, os, pathlib, re, shlex, shutil, signal, stat, subprocess, sys, time, unicodedata
 
+sys.path.append(str(pathlib.Path(__file__).resolve().parents[3] / "scripts"))
+import sync  # noqa: E402
+
+# Before ENV and every `orca` call: the janitor's precheck runs with a PATH that may lack the Orca CLI. cards.py,
+# pressure.py and reap_hard.py import this module, so their calls (and the children they start) find it too.
+sync.orca_on_path()
 CONFIG = pathlib.Path("~/.claude/agent-skills.json").expanduser()
 KINDS = ( "orphan", "docker", "branch", "worktree")
 ALERT = { "orphan_procs": 5, "dangling_volumes": 50,

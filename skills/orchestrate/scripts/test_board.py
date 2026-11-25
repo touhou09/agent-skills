@@ -59,13 +59,15 @@ for tz in ("UTC", "Asia/Tokyo"):
     code, out, _ = orch_env({"TZ": tz}, "brief", "render", "--no-refresh")
     after = dt.datetime.now().astimezone(__import__("zoneinfo").ZoneInfo(tz))
     assert code == 0 and out.splitlines()[0] in (f"**{before:%H:%M} · 리드·카드 행 없음**", f"**{after:%H:%M} · 리드·카드 행 없음**"), out
+# No Orca CLI anywhere: not on PATH, not named by ORCA_CLI_COMMAND, not under ~/.orca/cli/bin.
+NO_ORCA = {"PATH": str(tmp / "no-bin"), "HOME": str(tmp), "ORCA_CLI_COMMAND": ""}
 # With no state.json, or one older than state_min, the render collects the fleet itself; when it cannot (no orca on
 # PATH), it renders from the old files and the headline says how old they are.
-code, out, _ = orch_env({"PATH": str(tmp / "no-bin")}, "brief", "render")
+code, out, _ = orch_env(NO_ORCA, "brief", "render")
 assert code == 0 and out.splitlines()[0].endswith(" · 리드·카드 행 없음 · 세션 목록 없음 · 갱신 실패: orca not found**"), out
 state.mkdir(parents=True, exist_ok=True)
 (state / "state.json").write_text(json.dumps({"generated_at": "2000-01-01T00:00:00Z", "sessions": []}))
-code, out, _ = orch_env({"PATH": str(tmp / "no-bin")}, "brief", "render")
+code, out, _ = orch_env(NO_ORCA, "brief", "render")
 assert code == 0 and "· 세션 목록 " in out and "일 전 기준 · 갱신 실패: orca not found**" in out.splitlines()[0], out
 (state / "state.json").unlink()
 # The model's decisions keep the form: a question with its recommendation, numbered after the registered ones.

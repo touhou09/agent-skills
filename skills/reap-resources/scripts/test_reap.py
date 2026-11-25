@@ -1078,4 +1078,18 @@ with tempfile.TemporaryDirectory() as tmp:
     assert f["links"]["pr"] == "acme/app#2" and f["pid"] == 77 and f["previewed"] is True and f["registered"], f
 
 
+# A scheduled precheck runs with a PATH that lacks the Orca CLI; it still reads Orca's repos (from ~/.orca/cli/bin).
+with tempfile.TemporaryDirectory() as t:
+    home, repo = pathlib.Path(t, "home"), pathlib.Path(t, "repo")
+    (repo / ".git").mkdir(parents=True)
+    cli = home / ".orca" / "cli" / "bin" / "orca"
+    cli.parent.mkdir(parents=True)
+    cli.write_text("#!/bin/sh\necho '" + json.dumps({"result": {"repos": [{"path": str(repo)}]}}) + "'\n")
+    cli.chmod(0o755)
+    code = f"import sys; sys.path.insert(0, {str(pathlib.Path(__file__).resolve().parent)!r}); import reap; print(reap.repos([]))"
+    out = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, cwd=t,
+                         env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(home)})
+    assert out.stdout.strip() == repr([str(repo)]), (out.stdout, out.stderr)
+
+
 print("ok")
