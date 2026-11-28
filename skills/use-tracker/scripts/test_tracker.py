@@ -778,6 +778,7 @@ class MarkdownCli(unittest.TestCase):
         self.ok("create", "--project", "acme", "--title", "child", "--body-file", self.body, "--parent", "ABC-1")
         self.write("abc/ABC-10.md", "---\ntitle: ten\nstate: blocked\n---\n")  # a state this adapter does not know
         self.write("abc/ABC-3.md", "---\ntitle: no state\n---\n")  # Board.base: file.hasProperty("state")
+        self.write("abc/ABC-7.md", "---\ntitle: empty state\nstate:\n---\n")  # has the property, with no value
         self.write("abc/ABC-4.md", "no frontmatter\n")
         for other in ("abc/notes-1.md", "abc/abc-5.md", "abc/ACME-6.md", "Board.base"):
             self.write(other, "---\ntitle: t\nstate: started\n---\n")
@@ -786,9 +787,9 @@ class MarkdownCli(unittest.TestCase):
         self.assertTrue(out["board"].endswith("/Board.base"))
         # Board.base order: project folder, then the number (ABC-10 after ABC-2).
         self.assertEqual([(t["id"], t["project"], t["state"]) for t in out["tickets"]],
-                         [("ABC-1", "abc", "backlog"), ("ABC-2", "abc", "backlog"), ("ABC-10", "abc", "blocked"),
+                         [("ABC-1", "abc", "backlog"), ("ABC-2", "abc", "backlog"), ("ABC-7", "abc", ""), ("ABC-10", "abc", "blocked"),
                           ("ACME-1", "acme", "backlog")])
-        one, child = out["tickets"][0], out["tickets"][3]
+        one, child = out["tickets"][0], out["tickets"][4]
         self.assertEqual((one["title"], one["labels"], one["parent"]), ("one", ["x"], None))
         self.assertTrue(one["updated_at"].endswith("Z") and one["url"].endswith("/abc/ABC-1.md"), one)
         self.assertEqual(child["parent"], "ABC-1")

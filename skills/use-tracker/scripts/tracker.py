@@ -805,9 +805,9 @@ class MarkdownAdapter:
                 except (OSError, UnicodeDecodeError, TrackerError) as exc:
                     skipped.append({"file": os.path.join(p["name"], n), "error": str(exc)})
                     continue
-                if meta.get("state") is not None:
+                if "state" in meta:  # an empty `state:` still has the property: "" is its own column
                     tickets.append({"id": n[:-3], "project": p["name"], "title": meta.get("title"),
-                                    "state": str(meta["state"]), "labels": [str(l) for l in meta.get("labels") or []],
+                                    "state": "" if meta["state"] is None else str(meta["state"]), "labels": [str(l) for l in meta.get("labels") or []],
                                     "parent": unlink(meta.get("parent")), "updated_at": meta.get("updated_at"),
                                     "url": self._url(path)})
         return dict(out, tickets=tickets, skipped=skipped)

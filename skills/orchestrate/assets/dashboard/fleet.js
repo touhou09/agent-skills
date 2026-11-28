@@ -669,17 +669,17 @@ function fleetTickets() {
   if (rep.error) return head + `<div class="card"><div class="empty">${esc(rep.error)}</div></div>`;
   const cols = rep.columns || [], all = cols.flatMap((c) => c.tickets), n = {};
   all.forEach((t) => { n[t.project] = (n[t.project] || 0) + 1; });
-  const names = Object.keys(n).sort(), cur = names.includes(S.filters.tickets_project) ? S.filters.tickets_project : "all";
+  const names = Object.keys(n).sort(), cur = names.includes(S.filters.tickets_project) ? S.filters.tickets_project : "*";  // "*" is no folder name
   const urls = Object.fromEntries(all.map((t) => [t.id, t.url]));
   const board = cols.map((c) => {
-    const ts = c.tickets.filter((t) => cur === "all" || t.project === cur);
+    const ts = c.tickets.filter((t) => cur === "*" || t.project === cur);
     const cut = TICKET_DONE.includes(c.state) && !F.ticketsAll.has(c.state) ? TICKET_DONE_SHOWN : Infinity;
     const tone = Object.fromEntries(TICKET_STATES)[c.state] || "";
-    return `<section class="kb-col"><header>${tag(c.state, tone)}<span class="n">${ts.length}</span></header>
+    return `<section class="kb-col"><header>${tag(c.state || "no state", tone)}<span class="n">${ts.length}</span></header>
       <ul>${ts.slice(0, cut).map((t) => ticketCard(t, urls)).join("") || '<li class="kb-none">none</li>'}</ul>
       ${ts.length > cut ? `<button class="chip" type="button" data-kb-more="${esc(c.state)}">${ts.length - cut} more</button>` : ""}</section>`;
   }).join("");
-  const chipRow = names.length > 1 ? `<div class="proj-chips">${chips("tickets_project", [["all", "All projects", all.length], ...names.map((x) => [x, x, n[x]])], cur)}</div>` : "";
+  const chipRow = names.length > 1 ? `<div class="proj-chips">${chips("tickets_project", [["*", "All projects", all.length], ...names.map((x) => [x, x, n[x]])], cur)}</div>` : "";
   return `${head}${chipRow}${skippedNote(rep)}<div class="kb">${board}</div>`;
 }
 
