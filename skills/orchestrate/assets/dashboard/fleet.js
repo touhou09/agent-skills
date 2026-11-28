@@ -11,6 +11,7 @@ const FLEET_SECTIONS = [
   { id: "prs", label: "Pull requests", icon: "prs" },
   { id: "brief", label: "Brief", icon: "note" },
   { id: "stages", label: "Stages", icon: "flag" },
+  { id: "tickets", label: "Tickets", icon: "kanban" },
   { id: "todo", label: "To-do", icon: "check" },
   { id: "sent", label: "Sent", icon: "chat" },
   { id: "timeline", label: "Timeline", icon: "list" },
@@ -76,7 +77,7 @@ const EDGE = {
 };
 const CI_TONE = { success: "good", failure: "bad", pending: "warn" };
 
-const F = { token: null, draft: {}, confirm: null, chat: {}, arm: {}, armLapsed: new Set(), prompt: {}, decide: {}, tlShow: {}, tlOpen: new Set(), stageFold: new Set(), jobOpen: new Set() };
+const F = { ticketsAll: new Set(), token: null, draft: {}, confirm: null, chat: {}, arm: {}, armLapsed: new Set(), prompt: {}, decide: {}, tlShow: {}, tlOpen: new Set(), stageFold: new Set(), jobOpen: new Set() };
 
 // route() hands over "#/fleet/<section>[/<arg>]"; the only argument is a session id.
 // The Work page's stage table is the Stages page now: an old #/fleet/work link opens it.
@@ -132,8 +133,9 @@ function sessionTree(st) {
 function fleetSidebar() {
   const st = S.state;
   const counts = st ? { inbox: (st.items || []).length || null, sessions: (st.sessions || []).length,
-    prs: (st.prs || []).filter((p) => p.state === "OPEN").length || null, stages: stageOpen() || null, todo: todoCount() || null, automations: autoTroubled(st).length || null, monitors: monTroubled(st).length || null, graph: (st.prs || []).filter((p) => p.session).length || null } : {};
-  $("#section-list").innerHTML = FLEET_SECTIONS.map((s) => `${s.sep ? '<li class="sb-sep" aria-hidden="true"></li>' : ""}<li><a class="nav-item" href="#/fleet/${s.id}"
+    prs: (st.prs || []).filter((p) => p.state === "OPEN").length || null, stages: stageOpen() || null, todo: todoCount() || null, automations: autoTroubled(st).length || null, monitors: monTroubled(st).length || null, graph: (st.prs || []).filter((p) => p.session).length || null, tickets: ticketsOpen() } : {};
+  pollTickets();
+  $("#section-list").innerHTML = FLEET_SECTIONS.filter((s) => s.id !== "tickets" || !(F.tickets || {}).unsupported).map((s) => `${s.sep ? '<li class="sb-sep" aria-hidden="true"></li>' : ""}<li><a class="nav-item" href="#/fleet/${s.id}"
       ${s.id === S.section ? 'aria-current="page"' : ""} title="${s.label}">${icon(s.icon)}<span class="sb-text">${s.label}</span>
       ${counts[s.id] != null ? `<span class="count">${counts[s.id]}</span>` : ""}</a></li>`).join("");
 }
@@ -613,8 +615,9 @@ function pressureCard() {
 // Tickets (dash.py tickets_report via /api/fleet/tickets): each project folder of the markdown tracker, its ticket
 // counts per state and the tickets in progress, linked to Obsidian. Absent for a tracker that cannot list its projects.
 const TICKET_STATES = [["backlog", ""], ["todo", ""], ["started", "accent"], ["review", "warn"], ["completed", "good"], ["canceled", ""]];
+// The Tickets page reads every 5 s while it is open; elsewhere the sidebar count and the card take 20 s.
 async function pollTickets() {
-  if (F.ticketsBusy || (F.tickets && Date.now() - F.ticketsAt < 20e3)) return;
+  if (F.ticketsBusy || (F.tickets && Date.now() - F.ticketsAt < (S.section === "tickets" ? POLL_MS - 500 : 20e3))) return;
   F.ticketsBusy = true;
   const was = JSON.stringify(F.tickets);
   try {
@@ -622,8 +625,13 @@ async function pollTickets() {
     F.tickets = r.ok ? await r.json() : { error: `HTTP ${r.status}` };
   } catch (e) { F.tickets = { error: String(e.message || e) }; }
   F.ticketsAt = Date.now(); F.ticketsBusy = false;
-  if (isFleet() && S.section === "overview" && JSON.stringify(F.tickets) !== was) renderView();
+  if (!isFleet() || JSON.stringify(F.tickets) === was) return;
+  fleetSidebar();
+  if (["overview", "tickets"].includes(S.section)) renderView();
 }
+const ticketsOpen = () => ((F.tickets || {}).columns || []).filter((c) => !TICKET_DONE.includes(c.state)).reduce((n, c) => n + c.tickets.length, 0) || null;
+const skippedNote = (rep) => (rep.skipped || []).length ? `<div class="empty">${tag(`${rep.skipped.length} unreadable`, "warn", "alert")}
+  <span class="ellipsis" title="${esc(rep.skipped.map((s) => `${s.file}: ${s.error}`).join("\n"))}">${esc(rep.skipped.map((s) => s.file).join(", "))}</span></div>` : "";
 function ticketsCard() {
   pollTickets();
   const rep = F.tickets;
@@ -639,7 +647,40 @@ function ticketsCard() {
       <span class="grow ellipsis" title="${esc(t.title || "")}">${esc(t.title || "")}</span></li>`).join("");
     return `<li><b class="mono">${esc(p.key)}</b><span class="grow muted">${esc(p.name)}</span><span class="end wrap">${counts || "no tickets"}</span></li>${active}`;
   }).join("");
-  return `<div class="card">${head}<ul class="rows">${rows}</ul></div>`;
+  return `<div class="card">${head}<ul class="rows">${rows}</ul>${skippedNote(rep)}</div>`;
+}
+
+// Tickets page: the same report's columns (dash.py board_columns) as a read-only kanban, like the Obsidian Board.base
+// view. A done column shows its newest TICKET_DONE_SHOWN until its "N more" is clicked.
+const TICKET_DONE = ["completed", "canceled"], TICKET_DONE_SHOWN = 25;
+function ticketCard(t, urls) {
+  const parent = t.parent ? link(urls[t.parent], tag(`↑ ${t.parent}`, "", ""), "kb-parent") : "";
+  return `<li class="kb-card"><div class="kb-top"><span class="mono">${link(t.url, esc(t.id))}</span><span class="when">${esc((t.updated_at || "").slice(0, 10))}</span></div>
+    <div class="kb-title">${esc(t.title || "")}</div>
+    ${(t.labels || []).length || parent ? `<div class="kb-tags">${t.labels.map((l) => tag(l, "", "")).join("")}${parent}</div>` : ""}</li>`;
+}
+function fleetTickets() {
+  pollTickets();
+  const rep = F.tickets;
+  const head = `<div class="view-head"><div><h2>Tickets</h2><p>Every ticket of the markdown tracker by state, read-only, the same set as the Obsidian board: started, backlog, any other state, then the newest completed and canceled.</p></div>
+    ${rep && rep.board ? link(rep.board, `Board ${icon("arrow")}`, "go") : ""}</div>`;
+  if (!rep) return head + '<div class="loading">Loading…</div>';
+  if (rep.unsupported) return head + '<div class="card"><div class="empty">This page needs the markdown tracker (tracker.adapter: markdown).</div></div>';
+  if (rep.error) return head + `<div class="card"><div class="empty">${esc(rep.error)}</div></div>`;
+  const cols = rep.columns || [], all = cols.flatMap((c) => c.tickets), n = {};
+  all.forEach((t) => { n[t.project] = (n[t.project] || 0) + 1; });
+  const names = Object.keys(n).sort(), cur = names.includes(S.filters.tickets_project) ? S.filters.tickets_project : "all";
+  const urls = Object.fromEntries(all.map((t) => [t.id, t.url]));
+  const board = cols.map((c) => {
+    const ts = c.tickets.filter((t) => cur === "all" || t.project === cur);
+    const cut = TICKET_DONE.includes(c.state) && !F.ticketsAll.has(c.state) ? TICKET_DONE_SHOWN : Infinity;
+    const tone = Object.fromEntries(TICKET_STATES)[c.state] || "";
+    return `<section class="kb-col"><header>${tag(c.state, tone)}<span class="n">${ts.length}</span></header>
+      <ul>${ts.slice(0, cut).map((t) => ticketCard(t, urls)).join("") || '<li class="kb-none">none</li>'}</ul>
+      ${ts.length > cut ? `<button class="chip" type="button" data-kb-more="${esc(c.state)}">${ts.length - cut} more</button>` : ""}</section>`;
+  }).join("");
+  const chipRow = names.length > 1 ? `<div class="proj-chips">${chips("tickets_project", [["all", "All projects", all.length], ...names.map((x) => [x, x, n[x]])], cur)}</div>` : "";
+  return `${head}${chipRow}${skippedNote(rep)}<div class="kb">${board}</div>`;
 }
 
 // ------------------------------------------------------------ views
@@ -1715,7 +1756,7 @@ document.addEventListener("pointermove", (e) => {
   else if (F.statTip) { hideTip(); F.statTip = false; }
 });
 document.addEventListener("pointerout", (e) => { if (!e.relatedTarget && F.statTip) { hideTip(); F.statTip = false; } });
-const FLEET_VIEWS = { overview: fleetOverview, inbox: fleetInbox, prs: fleetPrs, brief: fleetBrief, stages: fleetStages, todo: fleetTodo, automations: fleetAutomations, monitors: fleetMonitors, sent: fleetSent, skills: fleetSkills, changes: fleetChanges, tokens: fleetTokens, flow: fleetFlow, stats: fleetStats, graph: fleetGraph, sessions: fleetSessions, session: fleetSession, timeline: fleetTimeline };
+const FLEET_VIEWS = { overview: fleetOverview, inbox: fleetInbox, prs: fleetPrs, brief: fleetBrief, stages: fleetStages, tickets: fleetTickets, todo: fleetTodo, automations: fleetAutomations, monitors: fleetMonitors, sent: fleetSent, skills: fleetSkills, changes: fleetChanges, tokens: fleetTokens, flow: fleetFlow, stats: fleetStats, graph: fleetGraph, sessions: fleetSessions, session: fleetSession, timeline: fleetTimeline };
 
 document.addEventListener("input", (e) => {
   const key = e.target.id === "chat-input" ? F.sessionId : e.target.dataset.decideInput;
@@ -1746,6 +1787,8 @@ document.addEventListener("click", async (e) => {
   if (decide) { decideAction(decide.dataset.key, decide.dataset.decide); return; }
   const undo = e.target.closest("[data-undo]");
   if (undo) { undoAction(undo.dataset.undo); return; }
+  const kbMore = e.target.closest("[data-kb-more]");
+  if (kbMore) { F.ticketsAll.add(kbMore.dataset.kbMore); renderView(); return; }
   const more = e.target.closest("[data-tl-more]");
   if (more) { const k = more.dataset.tlMore; F.tlShow[k] = (F.tlShow[k] || TL_STEP) + TL_STEP; renderView(); return; }
   const desc = e.target.closest("[data-tl-open]");

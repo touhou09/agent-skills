@@ -654,8 +654,25 @@ assert abc["key"] == "ABC" and abc["counts"] == {"backlog": 1, "started": 1, "re
 assert [(t["id"], t["title"], t["state"]) for t in abc["active"]] == [("ABC-2", "two", "started"), ("ABC-3", "three", "review")], abc
 assert abc["active"][0]["url"].startswith("obsidian://open?path="), abc
 assert rep["projects"][1]["counts"] == {} and rep["projects"][1]["active"] == []
+# The Tickets page: one column per state, started -> backlog -> any other state -> completed -> canceled.
+assert [(c["state"], [t["id"] for t in c["tickets"]]) for c in rep["columns"]] == [
+    ("started", ["ABC-2"]), ("backlog", ["ABC-1"]), ("review", ["ABC-3"]), ("completed", []), ("canceled", [])], rep["columns"]
+assert rep["columns"][0]["tickets"][0]["url"].startswith("obsidian://open?path="), rep["columns"]
+for title in ("four", "five", "six"):
+    subprocess.run(tpy + ["create", "--project", "abc", "--title", title, "--body-file", str(tix / "b.md")], check=True, capture_output=True)
+(tix / "vault" / "abc" / "ABC-4.md").write_text('---\ntitle: four\nstate: blocked\n---\n')  # a state the adapter does not know
+(tix / "vault" / "abc" / "ABC-5.md").write_text('---\ntitle: five\nstate: completed\nupdated_at: "2026-01-01T00:00:00Z"\n---\n')
+(tix / "vault" / "abc" / "ABC-6.md").write_text('---\ntitle: six\nstate: completed\nupdated_at: "2026-02-01T00:00:00Z"\n---\n')
+(tix / "vault" / "abc" / "notes.md").write_text('---\ntitle: not a ticket\nstate: started\n---\n')  # fails Board.base's name filter
+(tix / "vault" / "abc" / "ABC-7.md").write_text('---\ntitle: no state\n---\n')  # fails file.hasProperty("state")
+cols = {c["state"]: [t["id"] for t in c["tickets"]] for c in dash.tickets_report(config=str(tcfg))["columns"]}
+assert list(cols) == ["started", "backlog", "blocked", "review", "completed", "canceled"], cols
+assert cols["blocked"] == ["ABC-4"] and cols["completed"] == ["ABC-6", "ABC-5"], cols  # done columns: newest first
+assert "ABC-7" not in sum(cols.values(), []) and cols["started"] == ["ABC-2"], cols
 (tix / "vault" / "abc" / "ABC-1.md").write_text("broken\n")
-assert "ABC-1.md" in dash.tickets_report(config=str(tcfg))["error"]
+rep = dash.tickets_report(config=str(tcfg))  # one unreadable file is named, and the others still show
+assert [s["file"] for s in rep["skipped"]] == ["abc/ABC-1.md"] and "error" not in rep, rep
+assert "ABC-1" not in [t["id"] for c in rep["columns"] for t in c["tickets"]] and rep["columns"][0]["tickets"], rep
 tcfg.write_text(json.dumps({"tracker": {"adapter": "linear"}}))
 assert dash.tickets_report(config=str(tcfg)) == {"unsupported": True}
 os.environ.update(demo_env)

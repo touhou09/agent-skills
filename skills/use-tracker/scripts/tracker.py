@@ -10,6 +10,7 @@ Markdown folder (one file per ticket, one subfolder per project).
     tracker.py [...] comment ID --body-file F
     tracker.py [...] transition ID --to started|review|completed|canceled
     tracker.py [...] projects                       (markdown only: project folders and the Obsidian board)
+    tracker.py [...] board                          (markdown only: projects plus every ticket Board.base shows)
 
 stdout is always JSON; errors go to stderr with a non-zero exit.
 TRACKER_FIXTURES=<dir> serves list/get from <dir>/issues.json and refuses writes.
@@ -660,8 +661,9 @@ def yaml_scalar(text):
     return float(text) if re.fullmatch(r"-?\d+(\.\d+)?([eE][+-]?\d+)?", text) else text
 
 
-def parse_ticket(path, text):
-    """(frontmatter dict in file order, body). Anything outside the subset above is an error naming the file."""
+def parse_ticket(path, text, any_state=False):
+    """(frontmatter dict in file order, body). Anything outside the subset above is an error naming the file;
+    so is a state outside MD_STATE_TYPE, unless any_state."""
     lines = text.split("\n")
     if lines[0].strip() != "---" or "---" not in [l.strip() for l in lines[1:]]:
         raise TrackerError(f"{path}: no YAML frontmatter between --- lines")
@@ -680,7 +682,7 @@ def parse_ticket(path, text):
         except ValueError as exc:
             raise TrackerError(f"{path}: frontmatter line {n} unreadable ({exc}): {line}")
     state = meta.get("state")
-    if state not in MD_STATE_TYPE:
+    if not any_state and state not in MD_STATE_TYPE:
         raise TrackerError(f"{path}: state {state!r} is not one of {', '.join(MD_STATE_TYPE)}")
     return meta, "\n".join(lines[end + 1:])
 
@@ -787,6 +789,28 @@ class MarkdownAdapter:
         names = sorted(p for p in os.listdir(self.root) if NAME.match(p) and os.path.isdir(os.path.join(self.root, p)))
         return {"projects": [{"name": p, "key": p.upper()} for p in names],
                 "board": self._url(board) if os.path.isfile(board) else None}
+
+    def board(self):
+        """projects() plus every ticket Board.base shows, in its order (project folder, then number): a ticket file
+        with a state property, whatever the state. A file this adapter cannot read is listed under skipped."""
+        out, tickets, skipped = self.projects(), [], []
+        for p in out["projects"]:
+            folder, key = os.path.join(self.root, p["name"]), p["key"]
+            names = [n for n in os.listdir(folder) if re.fullmatch(re.escape(key) + r"-\d+\.md", n)]
+            for n in sorted(names, key=lambda n: int(n[len(key) + 1:-3])):
+                path = os.path.join(folder, n)
+                try:
+                    with open(path, encoding="utf-8") as fh:
+                        meta, _ = parse_ticket(path, fh.read(), any_state=True)
+                except (OSError, UnicodeDecodeError, TrackerError) as exc:
+                    skipped.append({"file": os.path.join(p["name"], n), "error": str(exc)})
+                    continue
+                if meta.get("state") is not None:
+                    tickets.append({"id": n[:-3], "project": p["name"], "title": meta.get("title"),
+                                    "state": str(meta["state"]), "labels": [str(l) for l in meta.get("labels") or []],
+                                    "parent": unlink(meta.get("parent")), "updated_at": meta.get("updated_at"),
+                                    "url": self._url(path)})
+        return dict(out, tickets=tickets, skipped=skipped)
 
     def _url(self, path):
         return self.link + urllib.parse.quote(path, safe="" if self.link.startswith("obsidian") else "/")
@@ -900,6 +924,7 @@ def build_parser():
     s.add_argument("id")
     s.add_argument("--to", required=True, choices=TRANSITION_TARGETS)
     sub.add_parser("projects")
+    sub.add_parser("board")
     return p
 
 
@@ -911,6 +936,10 @@ def run(argv):
         if not hasattr(adapter, "projects"):
             raise TrackerError("projects: only the markdown adapter lists its projects")
         return adapter.projects()
+    if args.cmd == "board":
+        if not hasattr(adapter, "board"):
+            raise TrackerError("board: only the markdown adapter lists every ticket")
+        return adapter.board()
     if args.cmd == "list":
         if args.limit is not None and args.limit < 1:
             raise TrackerError("--limit must be >= 1")

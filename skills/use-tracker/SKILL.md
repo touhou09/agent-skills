@@ -61,6 +61,7 @@ python3 $T label ID --add L [--add L2]
 python3 $T comment ID --body-file F
 python3 $T transition ID --to started|review|completed|canceled
 python3 $T projects   # markdown only: {"projects": [{"name", "key"}], "board": url or null}
+python3 $T board      # markdown only: projects + "tickets" (id, project, title, state, labels, parent, updated_at, url) + "skipped"
 ```
 
 Global flags: `--adapter linear|jira|markdown` (overrides config), `--config PATH`.
