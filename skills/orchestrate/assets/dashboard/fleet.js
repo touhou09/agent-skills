@@ -669,9 +669,12 @@ function ticketCard(t, urls, targets) {
 // A move (POST /api/fleet/tickets/state, tracker.py set-state): the card moves at once; the server refuses a ticket
 // that is no longer in `from`, the note says why, and the next poll puts the card where the file says it is.
 async function moveTicket(id, from, to, undo = false) {
-  const cols = (F.tickets || {}).columns || [], src = cols.find((c) => c.state === from), dst = cols.find((c) => c.state === to);
+  const cols = (F.tickets || {}).columns || [], src = cols.find((c) => c.state === from);
   const i = src ? src.tickets.findIndex((t) => t.id === id) : -1;
-  if (from === to || F.kbBusy || i < 0 || !dst || !to) return;
+  if (from === to || F.kbBusy || i < 0 || !to) return;
+  // An Undo into a column the move emptied: back before the done columns until the next poll orders it.
+  let dst = cols.find((c) => c.state === to);
+  if (!dst) cols.splice(Math.max(0, cols.findIndex((c) => TICKET_DONE.includes(c.state))), 0, dst = { state: to, tickets: [] });
   const [t] = src.tickets.splice(i, 1);
   dst.tickets.unshift({ ...t, state: to, updated_at: new Date().toISOString().slice(0, 19) + "Z" });
   F.kbBusy = true; F.kbGen = (F.kbGen || 0) + 1; F.kbNote = { id, from, to, undo, busy: true };
@@ -1851,7 +1854,10 @@ document.addEventListener("dragstart", (e) => {
   e.dataTransfer.effectAllowed = "move";
   card.classList.add("dragging");
 });
-document.addEventListener("dragend", () => { F.kbDrag = null; kbClear(); document.querySelectorAll(".kb-card.dragging").forEach((c) => c.classList.remove("dragging")); });
+// A poll during the drag stored the board without drawing it: draw it now (a drop has drawn already).
+document.addEventListener("dragend", () => { const was = F.kbDrag; F.kbDrag = null; kbClear();
+  document.querySelectorAll(".kb-card.dragging").forEach((c) => c.classList.remove("dragging"));
+  if (was && isFleet() && S.section === "tickets") renderView(); });
 document.addEventListener("dragover", (e) => { const col = kbCol(e); if (!col) return; e.preventDefault(); if (!col.classList.contains("drop")) { kbClear(); col.classList.add("drop"); } });
 document.addEventListener("drop", (e) => { const col = kbCol(e); if (!col) return; e.preventDefault(); const d = F.kbDrag; F.kbDrag = null; kbClear(); moveTicket(d.id, d.from, col.dataset.kbCol); });
 document.addEventListener("change", (e) => { const s = e.target.closest && e.target.closest("select[data-kb-move]"); if (s) moveTicket(s.dataset.kbMove, s.dataset.kbFrom, s.value); });

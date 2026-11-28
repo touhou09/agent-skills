@@ -1781,15 +1781,22 @@ def tickets_report(config=None):
 TICKETS = {"at": 0.0, "body": b""}
 
 
+LEFT = {}  # ticket id -> (state it left, monotonic time): its Undo may go back to a column the move emptied
+UNDO_S = 60
+
+
 def ticket_move(body, config=None):
     """The Tickets page's move, {id, from, to} -> (HTTP code, reply). `to` must be a column the page shows (not the
-    empty state's); the write is `tracker.py set-state`, which refuses when the ticket is no longer in `from`."""
+    empty state's), or the state this ticket left in the last UNDO_S seconds (Undo); the write is `tracker.py
+    set-state`, which refuses when the ticket is no longer in `from`."""
     if not all(isinstance(body.get(k), str) for k in ("id", "from", "to")):
         return 400, {"ok": False, "reason": "id, from and to are required"}
     rep = tickets_report(config)
     if rep.get("unsupported") or rep.get("error"):
         return 409, {"ok": False, "reason": rep.get("error") or "only the markdown tracker moves tickets"}
-    if body["to"] not in [c["state"] for c in rep["columns"] if c["state"]]:
+    left = LEFT.get(body["id"], (None, 0.0))
+    undo = left[0] == body["to"] and time.monotonic() - left[1] < UNDO_S
+    if not undo and body["to"] not in [c["state"] for c in rep["columns"] if c["state"]]:
         return 400, {"ok": False, "reason": f"{body['to']!r} is not a column on the Tickets page"}
     cmd = [sys.executable, str(tracker_path())] + (["--config", config] if config else [])
     try:
@@ -1798,6 +1805,7 @@ def ticket_move(body, config=None):
         return 409, {"ok": False, "reason": str(e).removeprefix("tracker: error: ")}
     finally:
         TICKETS["at"] = 0.0  # the next poll reads the folder again, whatever happened
+    LEFT[body["id"]] = (body["from"], time.monotonic())
     return 200, {"ok": True, "id": out["id"], "from": out["from"], "state": out["state"]}
 
 

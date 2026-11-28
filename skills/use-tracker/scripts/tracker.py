@@ -628,7 +628,7 @@ class JiraAdapter:
 # One Markdown file per ticket: <root>/<project>/<KEY>-<n>.md, KEY being the folder name in capitals.
 # The frontmatter carries the fields; the body is the description, then an optional "## Comments" section.
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
-STATE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+STATE_NAME = re.compile(r"^(?=\S)[^\x00-\x1f\x7f]{1,64}(?<=\S)$")  # one line, as typed in Obsidian ("In Progress")
 TICKET_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*-\d+$")
 MD_STATE_TYPE = {"triage": "triage", "backlog": "backlog", "todo": "unstarted", "started": "started",
                  "review": "started", "completed": "completed", "canceled": "canceled"}

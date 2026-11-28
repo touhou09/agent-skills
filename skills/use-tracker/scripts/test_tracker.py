@@ -817,7 +817,11 @@ class MarkdownCli(unittest.TestCase):
         self.ok("set-state", "ABC-1", "--from", "backlog", "--to", "blocked")
         self.ok("set-state", "ABC-1", "--from", "blocked", "--to", "started")
         self.assertIn('state: "started"', self.read("abc", "ABC-1.md"))
-        self.assertIn("bad state", self.fail("set-state", "ABC-1", "--from", "started", "--to", "bad state"))
+        self.ok("set-state", "ABC-1", "--from", "started", "--to", "In Progress")  # a state Obsidian users type
+        self.assertIn('state: "In Progress"', self.read("abc", "ABC-1.md"))
+        self.ok("set-state", "ABC-1", "--from", "In Progress", "--to", "started")
+        self.assertIn("bad", self.fail("set-state", "ABC-1", "--from", "started", "--to", "bad\nstate"))
+        self.assertIn("state", self.fail("set-state", "ABC-1", "--from", "started", "--to", " started"))
         self.assertIn("ABC-9", self.fail("set-state", "ABC-9", "--from", "started", "--to", "backlog"))
         self.env.config({"tracker": {"adapter": "linear"}})
         self.assertIn("only the markdown adapter", self.fail("set-state", "ABC-1", "--from", "started", "--to", "backlog"))

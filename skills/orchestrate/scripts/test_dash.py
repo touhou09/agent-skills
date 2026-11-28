@@ -697,6 +697,13 @@ assert [l for l in (tix / "vault" / "abc" / "ABC-2.md").read_text().splitlines()
 code, out = dash.ticket_move({"id": "ABC-2", "from": "started", "to": "todo"}, config=str(tcfg))
 assert code == 400 and "todo" in out["reason"], out  # not a column on the page
 assert dash.ticket_move({"id": "ABC-2", "from": "started"}, config=str(tcfg))[0] == 400
+# Undo into a column its move emptied: the last `blocked` ticket out and back; a known state with no tickets too.
+assert dash.ticket_move({"id": "ABC-4", "from": "blocked", "to": "backlog"}, config=str(tcfg))[0] == 200
+assert "blocked" not in [c["state"] for c in dash.tickets_report(config=str(tcfg))["columns"]]
+assert dash.ticket_move({"id": "ABC-4", "from": "backlog", "to": "blocked"}, config=str(tcfg))[0] == 200, "undo"
+assert dash.ticket_move({"id": "ABC-4", "from": "blocked", "to": "todo"}, config=str(tcfg))[0] == 400
+assert dash.ticket_move({"id": "ABC-3", "from": "review", "to": "started"}, config=str(tcfg))[0] == 200
+assert dash.ticket_move({"id": "ABC-3", "from": "started", "to": "review"}, config=str(tcfg))[0] == 200  # review emptied
 tcfg.write_text(json.dumps({"tracker": {"adapter": "linear"}}))
 assert dash.tickets_report(config=str(tcfg)) == {"unsupported": True}
 os.environ.update(demo_env)
