@@ -10,6 +10,8 @@ Markdown folder (one file per ticket, one subfolder per project).
     tracker.py [...] comment ID --body-file F
     tracker.py [...] transition ID --to started|review|completed|canceled
     tracker.py [...] projects                       (markdown only: project folders and the Obsidian board)
+    tracker.py [...] board                          (markdown only: projects plus every ticket Board.base shows)
+    tracker.py [...] set-state ID --from S --to S   (markdown only: the board's move, any state, only from S)
 
 stdout is always JSON; errors go to stderr with a non-zero exit.
 TRACKER_FIXTURES=<dir> serves list/get from <dir>/issues.json and refuses writes.
@@ -626,6 +628,7 @@ class JiraAdapter:
 # One Markdown file per ticket: <root>/<project>/<KEY>-<n>.md, KEY being the folder name in capitals.
 # The frontmatter carries the fields; the body is the description, then an optional "## Comments" section.
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+STATE_NAME = re.compile(r"^(?=\S)[^\x00-\x1f\x7f]{1,64}(?<=\S)$")  # one line, as typed in Obsidian ("In Progress")
 TICKET_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*-\d+$")
 MD_STATE_TYPE = {"triage": "triage", "backlog": "backlog", "todo": "unstarted", "started": "started",
                  "review": "started", "completed": "completed", "canceled": "canceled"}
@@ -660,8 +663,9 @@ def yaml_scalar(text):
     return float(text) if re.fullmatch(r"-?\d+(\.\d+)?([eE][+-]?\d+)?", text) else text
 
 
-def parse_ticket(path, text):
-    """(frontmatter dict in file order, body). Anything outside the subset above is an error naming the file."""
+def parse_ticket(path, text, any_state=False):
+    """(frontmatter dict in file order, body). Anything outside the subset above is an error naming the file;
+    so is a state outside MD_STATE_TYPE, unless any_state."""
     lines = text.split("\n")
     if lines[0].strip() != "---" or "---" not in [l.strip() for l in lines[1:]]:
         raise TrackerError(f"{path}: no YAML frontmatter between --- lines")
@@ -680,7 +684,7 @@ def parse_ticket(path, text):
         except ValueError as exc:
             raise TrackerError(f"{path}: frontmatter line {n} unreadable ({exc}): {line}")
     state = meta.get("state")
-    if state not in MD_STATE_TYPE:
+    if not any_state and state not in MD_STATE_TYPE:
         raise TrackerError(f"{path}: state {state!r} is not one of {', '.join(MD_STATE_TYPE)}")
     return meta, "\n".join(lines[end + 1:])
 
@@ -761,7 +765,7 @@ class MarkdownAdapter:
         return [t for p in sorted(os.listdir(self.root)) if NAME.match(p) and os.path.isdir(os.path.join(self.root, p))
                 for t in self._tickets(os.path.join(self.root, p))]
 
-    def _update(self, issue_id, change):
+    def _update(self, issue_id, change, any_state=False):
         """Read, change and rewrite one ticket under a lock, replacing the file whole.
         `change` returns None to leave the file as it is."""
         import fcntl  # Unix only; imported here so the other adapters still run without it
@@ -769,7 +773,8 @@ class MarkdownAdapter:
         # ponytail: one lock for the whole root; per-ticket locks if many workers write at once.
         with open(os.path.join(self.root, ".tracker.lock"), "w") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            changed = change(*self._read(path))
+            with open(path, encoding="utf-8") as fh:
+                changed = change(*parse_ticket(path, fh.read(), any_state))
             if changed is None:
                 return
             meta, body = changed
@@ -787,6 +792,28 @@ class MarkdownAdapter:
         names = sorted(p for p in os.listdir(self.root) if NAME.match(p) and os.path.isdir(os.path.join(self.root, p)))
         return {"projects": [{"name": p, "key": p.upper()} for p in names],
                 "board": self._url(board) if os.path.isfile(board) else None}
+
+    def board(self):
+        """projects() plus every ticket Board.base shows, in its order (project folder, then number): a ticket file
+        with a state property, whatever the state. A file this adapter cannot read is listed under skipped."""
+        out, tickets, skipped = self.projects(), [], []
+        for p in out["projects"]:
+            folder, key = os.path.join(self.root, p["name"]), p["key"]
+            names = [n for n in os.listdir(folder) if re.fullmatch(re.escape(key) + r"-\d+\.md", n)]
+            for n in sorted(names, key=lambda n: int(n[len(key) + 1:-3])):
+                path = os.path.join(folder, n)
+                try:
+                    with open(path, encoding="utf-8") as fh:
+                        meta, _ = parse_ticket(path, fh.read(), any_state=True)
+                except (OSError, UnicodeDecodeError, TrackerError) as exc:
+                    skipped.append({"file": os.path.join(p["name"], n), "error": str(exc)})
+                    continue
+                if "state" in meta:  # an empty `state:` still has the property: "" is its own column
+                    tickets.append({"id": n[:-3], "project": p["name"], "title": meta.get("title"),
+                                    "state": "" if meta["state"] is None else str(meta["state"]), "labels": [str(l) for l in meta.get("labels") or []],
+                                    "parent": unlink(meta.get("parent")), "updated_at": meta.get("updated_at"),
+                                    "url": self._url(path)})
+        return dict(out, tickets=tickets, skipped=skipped)
 
     def _url(self, path):
         return self.link + urllib.parse.quote(path, safe="" if self.link.startswith("obsidian") else "/")
@@ -838,6 +865,19 @@ class MarkdownAdapter:
             return meta, f"{head}\n\n### {now_z()}\n\n{text}\n"
         self._update(issue_id, add)
         return {"ok": True, "op": "comment", "id": issue_id}
+
+    def set_state(self, issue_id, expect, target):
+        """The board's move: any state to any other, back out of a closed one too (transition only moves forward).
+        Refused when the ticket is no longer in `expect`; only `state` and `updated_at` change."""
+        self._check(target, STATE_NAME, "state")
+
+        def move(meta, body):
+            now = "" if meta.get("state") is None else str(meta["state"])
+            if now != expect:
+                raise TrackerError(f"{issue_id} is {now or 'without a state'} now, not {expect}: it changed meanwhile")
+            return None if now == target else (dict(meta, state=target), body)
+        self._update(issue_id, move, any_state=True)
+        return {"ok": True, "op": "set-state", "id": issue_id, "from": expect, "state": target}
 
     def transition(self, issue_id, target):
         closed = {f"{target}_at": now_z()} if target in ("completed", "canceled") else {}
@@ -900,6 +940,11 @@ def build_parser():
     s.add_argument("id")
     s.add_argument("--to", required=True, choices=TRANSITION_TARGETS)
     sub.add_parser("projects")
+    sub.add_parser("board")
+    s = sub.add_parser("set-state")
+    s.add_argument("id")
+    s.add_argument("--from", dest="expect", required=True)
+    s.add_argument("--to", required=True)
     return p
 
 
@@ -911,6 +956,14 @@ def run(argv):
         if not hasattr(adapter, "projects"):
             raise TrackerError("projects: only the markdown adapter lists its projects")
         return adapter.projects()
+    if args.cmd == "board":
+        if not hasattr(adapter, "board"):
+            raise TrackerError("board: only the markdown adapter lists every ticket")
+        return adapter.board()
+    if args.cmd == "set-state":
+        if not hasattr(adapter, "set_state"):
+            raise TrackerError("set-state: only the markdown adapter moves a ticket to any state")
+        return adapter.set_state(args.id, args.expect, args.to)
     if args.cmd == "list":
         if args.limit is not None and args.limit < 1:
             raise TrackerError("--limit must be >= 1")

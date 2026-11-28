@@ -11,6 +11,7 @@ const FLEET_SECTIONS = [
   { id: "prs", label: "Pull requests", icon: "prs" },
   { id: "brief", label: "Brief", icon: "note" },
   { id: "stages", label: "Stages", icon: "flag" },
+  { id: "tickets", label: "Tickets", icon: "kanban" },
   { id: "todo", label: "To-do", icon: "check" },
   { id: "sent", label: "Sent", icon: "chat" },
   { id: "timeline", label: "Timeline", icon: "list" },
@@ -76,7 +77,7 @@ const EDGE = {
 };
 const CI_TONE = { success: "good", failure: "bad", pending: "warn" };
 
-const F = { token: null, draft: {}, confirm: null, chat: {}, arm: {}, armLapsed: new Set(), prompt: {}, decide: {}, tlShow: {}, tlOpen: new Set(), stageFold: new Set(), jobOpen: new Set() };
+const F = { ticketsAll: new Set(), token: null, draft: {}, confirm: null, chat: {}, arm: {}, armLapsed: new Set(), prompt: {}, decide: {}, tlShow: {}, tlOpen: new Set(), stageFold: new Set(), jobOpen: new Set() };
 
 // route() hands over "#/fleet/<section>[/<arg>]"; the only argument is a session id.
 // The Work page's stage table is the Stages page now: an old #/fleet/work link opens it.
@@ -132,8 +133,9 @@ function sessionTree(st) {
 function fleetSidebar() {
   const st = S.state;
   const counts = st ? { inbox: (st.items || []).length || null, sessions: (st.sessions || []).length,
-    prs: (st.prs || []).filter((p) => p.state === "OPEN").length || null, stages: stageOpen() || null, todo: todoCount() || null, automations: autoTroubled(st).length || null, monitors: monTroubled(st).length || null, graph: (st.prs || []).filter((p) => p.session).length || null } : {};
-  $("#section-list").innerHTML = FLEET_SECTIONS.map((s) => `${s.sep ? '<li class="sb-sep" aria-hidden="true"></li>' : ""}<li><a class="nav-item" href="#/fleet/${s.id}"
+    prs: (st.prs || []).filter((p) => p.state === "OPEN").length || null, stages: stageOpen() || null, todo: todoCount() || null, automations: autoTroubled(st).length || null, monitors: monTroubled(st).length || null, graph: (st.prs || []).filter((p) => p.session).length || null, tickets: ticketsOpen() } : {};
+  pollTickets();
+  $("#section-list").innerHTML = FLEET_SECTIONS.filter((s) => s.id !== "tickets" || !(F.tickets || {}).unsupported).map((s) => `${s.sep ? '<li class="sb-sep" aria-hidden="true"></li>' : ""}<li><a class="nav-item" href="#/fleet/${s.id}"
       ${s.id === S.section ? 'aria-current="page"' : ""} title="${s.label}">${icon(s.icon)}<span class="sb-text">${s.label}</span>
       ${counts[s.id] != null ? `<span class="count">${counts[s.id]}</span>` : ""}</a></li>`).join("");
 }
@@ -613,17 +615,26 @@ function pressureCard() {
 // Tickets (dash.py tickets_report via /api/fleet/tickets): each project folder of the markdown tracker, its ticket
 // counts per state and the tickets in progress, linked to Obsidian. Absent for a tracker that cannot list its projects.
 const TICKET_STATES = [["backlog", ""], ["todo", ""], ["started", "accent"], ["review", "warn"], ["completed", "good"], ["canceled", ""]];
+// The Tickets page reads every 5 s while it is open; elsewhere the sidebar count and the card take 20 s.
 async function pollTickets() {
-  if (F.ticketsBusy || (F.tickets && Date.now() - F.ticketsAt < 20e3)) return;
+  if (F.ticketsBusy || F.kbBusy || (F.tickets && Date.now() - F.ticketsAt < (S.section === "tickets" ? POLL_MS - 500 : 20e3))) return;
   F.ticketsBusy = true;
-  const was = JSON.stringify(F.tickets);
+  const was = JSON.stringify(F.tickets), gen = F.kbGen;
+  let got;
   try {
     const r = await fetch("/api/fleet/tickets", { cache: "no-store" });
-    F.tickets = r.ok ? await r.json() : { error: `HTTP ${r.status}` };
-  } catch (e) { F.tickets = { error: String(e.message || e) }; }
-  F.ticketsAt = Date.now(); F.ticketsBusy = false;
-  if (isFleet() && S.section === "overview" && JSON.stringify(F.tickets) !== was) renderView();
+    got = r.ok ? await r.json() : { error: `HTTP ${r.status}` };
+  } catch (e) { got = { error: String(e.message || e) }; }
+  F.ticketsBusy = false;
+  if (F.kbBusy || F.kbGen !== gen) return;  // read before a move landed: it would undo the card's move on screen
+  F.tickets = got; F.ticketsAt = Date.now();
+  if (!isFleet() || JSON.stringify(F.tickets) === was) return;
+  fleetSidebar();
+  if (["overview", "tickets"].includes(S.section) && !F.kbDrag) renderView();
 }
+const ticketsOpen = () => ((F.tickets || {}).columns || []).filter((c) => !TICKET_DONE.includes(c.state)).reduce((n, c) => n + c.tickets.length, 0) || null;
+const skippedNote = (rep) => (rep.skipped || []).length ? `<div class="empty">${tag(`${rep.skipped.length} unreadable`, "warn", "alert")}
+  <span class="ellipsis" title="${esc(rep.skipped.map((s) => `${s.file}: ${s.error}`).join("\n"))}">${esc(rep.skipped.map((s) => s.file).join(", "))}</span></div>` : "";
 function ticketsCard() {
   pollTickets();
   const rep = F.tickets;
@@ -639,7 +650,73 @@ function ticketsCard() {
       <span class="grow ellipsis" title="${esc(t.title || "")}">${esc(t.title || "")}</span></li>`).join("");
     return `<li><b class="mono">${esc(p.key)}</b><span class="grow muted">${esc(p.name)}</span><span class="end wrap">${counts || "no tickets"}</span></li>${active}`;
   }).join("");
-  return `<div class="card">${head}<ul class="rows">${rows}</ul></div>`;
+  return `<div class="card">${head}<ul class="rows">${rows}</ul>${skippedNote(rep)}</div>`;
+}
+
+// Tickets page: the same report's columns (dash.py board_columns) as a read-only kanban, like the Obsidian Board.base
+// view. A done column shows its newest TICKET_DONE_SHOWN until its "N more" is clicked.
+const TICKET_DONE = ["completed", "canceled"], TICKET_DONE_SHOWN = 25;
+function ticketCard(t, urls, targets) {
+  const parent = t.parent ? link(urls[t.parent], tag(`↑ ${t.parent}`, "", ""), "kb-parent") : "";
+  // The state menu is the move without a mouse (touch, keyboard); dragging the card does the same.
+  const menu = `<select class="kb-move" data-kb-move="${esc(t.id)}" data-kb-from="${esc(t.state)}" aria-label="Move ${esc(t.id)} to state">
+    ${t.state ? "" : '<option value="" selected>no state</option>'}${targets.map((s) => `<option value="${esc(s)}"${s === t.state ? " selected" : ""}>${esc(s)}</option>`).join("")}</select>`;
+  return `<li class="kb-card" draggable="true" data-kb-id="${esc(t.id)}" data-kb-state="${esc(t.state)}"><div class="kb-top"><span class="mono">${link(t.url, esc(t.id))}</span><span class="when">${esc((t.updated_at || "").slice(0, 10))}</span></div>
+    <div class="kb-title">${esc(t.title || "")}</div>
+    <div class="kb-foot"><div class="kb-tags">${(t.labels || []).map((l) => tag(l, "", "")).join("")}${parent}</div>${menu}</div></li>`;
+}
+
+// A move (POST /api/fleet/tickets/state, tracker.py set-state): the card moves at once; the server refuses a ticket
+// that is no longer in `from`, the note says why, and the next poll puts the card where the file says it is.
+async function moveTicket(id, from, to, undo = false) {
+  const cols = (F.tickets || {}).columns || [], src = cols.find((c) => c.state === from);
+  const i = src ? src.tickets.findIndex((t) => t.id === id) : -1;
+  if (from === to || F.kbBusy || i < 0 || !to) return;
+  // An Undo into a column the move emptied: back before the done columns until the next poll orders it.
+  let dst = cols.find((c) => c.state === to);
+  if (!dst) cols.splice(Math.max(0, cols.findIndex((c) => TICKET_DONE.includes(c.state))), 0, dst = { state: to, tickets: [] });
+  const [t] = src.tickets.splice(i, 1);
+  dst.tickets.unshift({ ...t, state: to, updated_at: new Date().toISOString().slice(0, 19) + "Z" });
+  F.kbBusy = true; F.kbGen = (F.kbGen || 0) + 1; F.kbNote = { id, from, to, undo, busy: true };
+  renderView(); fleetSidebar();
+  let out;
+  try { out = await fleetPost("/api/fleet/tickets/state", { id, from, to }); } catch (e) { out = { ok: false, reason: String(e.message || e) }; }
+  F.kbBusy = false; F.ticketsAt = 0;
+  F.kbNote = { id, from, to, undo, ok: out.ok, reason: out.reason, until: Date.now() + UNDO_MS };
+  setTimeout(renderView, UNDO_MS + 100);
+  renderView();
+  pollTickets();
+}
+function kbNote() {
+  const m = F.kbNote;
+  if (!m || Date.now() > (m.until || Infinity)) return "";
+  const what = `<span class="mono">${esc(m.id)}</span> ${esc(m.from || "no state")} → <b>${esc(m.to)}</b>`;
+  if (m.busy) return `<div class="kb-note muted"><span>Moving ${what}…</span></div>`;
+  if (!m.ok) return `<div class="kb-note">${tag("not moved", "bad", "fail")}<span>${what}: ${esc(m.reason || "")}</span></div>`;
+  return `<div class="kb-note">${tag(m.undo ? "moved back" : "moved", "good", "check")}<span>${what}</span>${m.undo || !m.from ? "" : '<button class="chip ack" type="button" data-kb-undo>Undo</button>'}</div>`;
+}
+function fleetTickets() {
+  pollTickets();
+  const rep = F.tickets;
+  const head = `<div class="view-head"><div><h2>Tickets</h2><p>Every ticket of the markdown tracker by state, the same set as the Obsidian board: started, backlog, any other state, then the newest completed and canceled. Drag a card to another column, or pick its state in the card's menu, to move it.</p></div>
+    ${rep && rep.board ? link(rep.board, `Board ${icon("arrow")}`, "go") : ""}</div>`;
+  if (!rep) return head + '<div class="loading">Loading…</div>';
+  if (rep.unsupported) return head + '<div class="card"><div class="empty">This page needs the markdown tracker (tracker.adapter: markdown).</div></div>';
+  if (rep.error) return head + `<div class="card"><div class="empty">${esc(rep.error)}</div></div>`;
+  const cols = rep.columns || [], all = cols.flatMap((c) => c.tickets), n = {};
+  all.forEach((t) => { n[t.project] = (n[t.project] || 0) + 1; });
+  const names = Object.keys(n).sort(), cur = names.includes(S.filters.tickets_project) ? S.filters.tickets_project : "*";  // "*" is no folder name
+  const urls = Object.fromEntries(all.map((t) => [t.id, t.url])), targets = cols.map((c) => c.state).filter(Boolean);
+  const board = cols.map((c) => {
+    const ts = c.tickets.filter((t) => cur === "*" || t.project === cur);
+    const cut = TICKET_DONE.includes(c.state) && !F.ticketsAll.has(c.state) ? TICKET_DONE_SHOWN : Infinity;
+    const tone = Object.fromEntries(TICKET_STATES)[c.state] || "";
+    return `<section class="kb-col" data-kb-col="${esc(c.state)}"><header>${tag(c.state || "no state", tone)}<span class="n">${ts.length}</span></header>
+      <ul>${ts.slice(0, cut).map((t) => ticketCard(t, urls, targets)).join("") || '<li class="kb-none">none</li>'}</ul>
+      ${ts.length > cut ? `<button class="chip" type="button" data-kb-more="${esc(c.state)}">${ts.length - cut} more</button>` : ""}</section>`;
+  }).join("");
+  const chipRow = names.length > 1 ? `<div class="proj-chips">${chips("tickets_project", [["*", "All projects", all.length], ...names.map((x) => [x, x, n[x]])], cur)}</div>` : "";
+  return `${head}${chipRow}${skippedNote(rep)}${kbNote()}<div class="kb">${board}</div>`;
 }
 
 // ------------------------------------------------------------ views
@@ -1715,7 +1792,7 @@ document.addEventListener("pointermove", (e) => {
   else if (F.statTip) { hideTip(); F.statTip = false; }
 });
 document.addEventListener("pointerout", (e) => { if (!e.relatedTarget && F.statTip) { hideTip(); F.statTip = false; } });
-const FLEET_VIEWS = { overview: fleetOverview, inbox: fleetInbox, prs: fleetPrs, brief: fleetBrief, stages: fleetStages, todo: fleetTodo, automations: fleetAutomations, monitors: fleetMonitors, sent: fleetSent, skills: fleetSkills, changes: fleetChanges, tokens: fleetTokens, flow: fleetFlow, stats: fleetStats, graph: fleetGraph, sessions: fleetSessions, session: fleetSession, timeline: fleetTimeline };
+const FLEET_VIEWS = { overview: fleetOverview, inbox: fleetInbox, prs: fleetPrs, brief: fleetBrief, stages: fleetStages, tickets: fleetTickets, todo: fleetTodo, automations: fleetAutomations, monitors: fleetMonitors, sent: fleetSent, skills: fleetSkills, changes: fleetChanges, tokens: fleetTokens, flow: fleetFlow, stats: fleetStats, graph: fleetGraph, sessions: fleetSessions, session: fleetSession, timeline: fleetTimeline };
 
 document.addEventListener("input", (e) => {
   const key = e.target.id === "chat-input" ? F.sessionId : e.target.dataset.decideInput;
@@ -1746,6 +1823,9 @@ document.addEventListener("click", async (e) => {
   if (decide) { decideAction(decide.dataset.key, decide.dataset.decide); return; }
   const undo = e.target.closest("[data-undo]");
   if (undo) { undoAction(undo.dataset.undo); return; }
+  const kbMore = e.target.closest("[data-kb-more]");
+  if (kbMore) { F.ticketsAll.add(kbMore.dataset.kbMore); renderView(); return; }
+  if (e.target.closest("[data-kb-undo]") && F.kbNote) { const m = F.kbNote; moveTicket(m.id, m.to, m.from, true); return; }
   const more = e.target.closest("[data-tl-more]");
   if (more) { const k = more.dataset.tlMore; F.tlShow[k] = (F.tlShow[k] || TL_STEP) + TL_STEP; renderView(); return; }
   const desc = e.target.closest("[data-tl-open]");
@@ -1762,3 +1842,22 @@ document.addEventListener("click", async (e) => {
   t.disabled = true;
   try { await fleetPost("/api/fleet/dismiss", { key: t.dataset.dismiss }); delete F.decide[t.dataset.dismiss]; t.closest("li").remove(); } catch (err) { t.disabled = false; }
 });
+
+// Tickets page moves: drag a card onto a column (not the "no state" one), or change the card's state menu.
+const kbCol = (e) => F.kbDrag && e.target.closest && e.target.closest(".kb-col[data-kb-col]:not([data-kb-col=''])");
+const kbClear = () => document.querySelectorAll(".kb-col.drop").forEach((c) => c.classList.remove("drop"));
+document.addEventListener("dragstart", (e) => {
+  const card = e.target.closest && e.target.closest(".kb-card[data-kb-id]");
+  if (!card) return;
+  F.kbDrag = { id: card.dataset.kbId, from: card.dataset.kbState };
+  e.dataTransfer.setData("text/plain", card.dataset.kbId);
+  e.dataTransfer.effectAllowed = "move";
+  card.classList.add("dragging");
+});
+// A poll during the drag stored the board without drawing it: draw it now (a drop has drawn already).
+document.addEventListener("dragend", () => { const was = F.kbDrag; F.kbDrag = null; kbClear();
+  document.querySelectorAll(".kb-card.dragging").forEach((c) => c.classList.remove("dragging"));
+  if (was && isFleet() && S.section === "tickets") renderView(); });
+document.addEventListener("dragover", (e) => { const col = kbCol(e); if (!col) return; e.preventDefault(); if (!col.classList.contains("drop")) { kbClear(); col.classList.add("drop"); } });
+document.addEventListener("drop", (e) => { const col = kbCol(e); if (!col) return; e.preventDefault(); const d = F.kbDrag; F.kbDrag = null; kbClear(); moveTicket(d.id, d.from, col.dataset.kbCol); });
+document.addEventListener("change", (e) => { const s = e.target.closest && e.target.closest("select[data-kb-move]"); if (s) moveTicket(s.dataset.kbMove, s.dataset.kbFrom, s.value); });

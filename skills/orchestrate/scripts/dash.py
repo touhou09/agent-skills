@@ -1420,6 +1420,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             written, refused = (acks.write if path.endswith("ack") else board.close)(body["ids"][:500], undo=body.get("undo") is True)
             FLEET_WAKE.set()
             return self.send(200, json.dumps({"written": written, "refused": refused}).encode())
+        elif path == "/api/fleet/tickets/state":
+            code, out = ticket_move(body)
+            return self.send(code, json.dumps(out, ensure_ascii=False).encode())
         elif path == "/api/fleet/send" and isinstance(body.get("session"), str) and isinstance(body.get("text"), str):
             handle = body.get("handle") if isinstance(body.get("handle"), str) else None
             code, out = fleet.send(body["session"], body["text"], handle)
@@ -1737,33 +1740,73 @@ def periodic_report():
 
 
 ACTIVE_STATES = ("started", "review")
-TICKETS_TTL = 20  # seconds; the page polls faster, and a project folder is read file by file
+BOARD_FIRST, BOARD_LAST = ("started", "backlog"), ("completed", "canceled")  # any other state goes between them
+TICKETS_TTL = 5  # seconds: the Tickets page polls every 5 s, and one `tracker.py board` reads ~200 files in ~50 ms
+
+
+def board_columns(tickets):
+    """The Tickets page's kanban: one column per state, started -> backlog -> other states A-Z -> completed ->
+    canceled, each in the board's order, except that the done columns put the newest update first."""
+    by = {s: [] for s in BOARD_FIRST + BOARD_LAST}
+    for t in tickets:
+        by.setdefault(t["state"], []).append(t)
+    for s in BOARD_LAST:
+        by[s].sort(key=lambda t: t.get("updated_at") or "", reverse=True)
+    others = sorted(set(by) - set(BOARD_FIRST + BOARD_LAST))
+    return [{"state": s, "tickets": by[s]} for s in BOARD_FIRST + tuple(others) + BOARD_LAST]
 
 
 def tickets_report(config=None):
-    """The markdown tracker's project folders: ticket counts per state and the tickets in progress, for the Tickets
-    card. {"unsupported": True} for a tracker that cannot list its projects (Linear, Jira), {"error": ...} when a
-    folder cannot be read."""
+    """The markdown tracker's tickets, from one `tracker.py board`: per project folder the counts per state and the
+    tickets in progress (the Overview's Tickets card), and every ticket in its state's column (the Tickets page).
+    {"unsupported": True} for a tracker that cannot list its projects (Linear, Jira), {"error": ...} when the
+    tracker fails; a single file the adapter cannot read is named under skipped instead."""
     base = [sys.executable, str(tracker_path())] + (["--config", config] if config else [])
     try:
-        found = sh(base + ["projects"], timeout=20)
+        found = sh(base + ["board"], timeout=20)
     except SourceError as e:
         return {"unsupported": True} if "only the markdown adapter" in str(e) else {"error": str(e)}
-    projects = []
+    tickets, projects = found.get("tickets") or [], []
     for p in found.get("projects") or []:
-        try:
-            issues = sh(base + ["list", "--project", p["name"]], timeout=20)
-        except SourceError as e:
-            return {"error": str(e)}
+        mine = [t for t in tickets if t["project"] == p["name"]]
         counts = {}
-        for i in issues:
-            counts[i["state"]] = counts.get(i["state"], 0) + 1
-        active = [{k: i.get(k) for k in ("id", "title", "state", "url")} for i in issues if i.get("state") in ACTIVE_STATES]
+        for t in mine:
+            counts[t["state"]] = counts.get(t["state"], 0) + 1
+        active = [{k: t.get(k) for k in ("id", "title", "state", "url")} for t in mine if t["state"] in ACTIVE_STATES]
         projects.append({"name": p["name"], "key": p["key"], "counts": counts, "active": active})
-    return {"projects": projects, "board": found.get("board")}
+    return {"projects": projects, "board": found.get("board"), "columns": board_columns(tickets),
+            "skipped": found.get("skipped") or []}
 
 
 TICKETS = {"at": 0.0, "body": b""}
+
+
+LEFT = {}  # ticket id -> (state it left, monotonic time): its Undo may go back to a column the move emptied
+UNDO_S = 60
+
+
+def ticket_move(body, config=None):
+    """The Tickets page's move, {id, from, to} -> (HTTP code, reply). `to` must be a column the page shows (not the
+    empty state's), or the state this ticket left in the last UNDO_S seconds (Undo); the write is `tracker.py
+    set-state`, which refuses when the ticket is no longer in `from`."""
+    if not all(isinstance(body.get(k), str) for k in ("id", "from", "to")):
+        return 400, {"ok": False, "reason": "id, from and to are required"}
+    rep = tickets_report(config)
+    if rep.get("unsupported") or rep.get("error"):
+        return 409, {"ok": False, "reason": rep.get("error") or "only the markdown tracker moves tickets"}
+    left = LEFT.get(body["id"], (None, 0.0))
+    undo = left[0] == body["to"] and time.monotonic() - left[1] < UNDO_S
+    if not undo and body["to"] not in [c["state"] for c in rep["columns"] if c["state"]]:
+        return 400, {"ok": False, "reason": f"{body['to']!r} is not a column on the Tickets page"}
+    cmd = [sys.executable, str(tracker_path())] + (["--config", config] if config else [])
+    try:
+        out = sh(cmd + ["set-state", body["id"], "--from", body["from"], "--to", body["to"]], timeout=20)
+    except SourceError as e:
+        return 409, {"ok": False, "reason": str(e).removeprefix("tracker: error: ")}
+    finally:
+        TICKETS["at"] = 0.0  # the next poll reads the folder again, whatever happened
+    LEFT[body["id"]] = (body["from"], time.monotonic())
+    return 200, {"ok": True, "id": out["id"], "from": out["from"], "state": out["state"]}
 
 
 def tickets_cached():

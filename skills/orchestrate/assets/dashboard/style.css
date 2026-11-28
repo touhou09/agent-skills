@@ -629,3 +629,25 @@ table.sent details > summary { cursor: pointer; max-width: 720px; }
 .repo-row { display: grid; grid-template-columns: minmax(0, 14em) 1fr 3em; gap: var(--s2); align-items: center; font-size: var(--t-sm); }
 .repo-bar { height: 8px; border-radius: 2px; background: var(--panel-2); }
 .repo-bar > span { display: block; height: 100%; border-radius: 2px; background: var(--warn); }
+
+/* Tickets page: one column per state; under 640px the columns stack. */
+.kb { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(180px, 1fr); gap: var(--s3); overflow-x: auto; align-items: start; padding-bottom: var(--s2); }
+.kb-col { background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--r-lg); padding: var(--s2); min-width: 0; }
+.kb-col > header { display: flex; align-items: center; justify-content: space-between; padding: 2px var(--s1) var(--s2); }
+.kb-col > header .n { color: var(--ink-3); font-size: var(--t-sm); }
+.kb-col > ul { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s2); }
+.kb-col > .chip { margin-top: var(--s2); width: 100%; justify-content: center; }
+.kb-card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--s2) var(--s3); min-width: 0; }
+.kb-top { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0 var(--s2); white-space: nowrap; font-size: var(--t-sm); color: var(--ink-3); }
+.kb-title { margin: 2px 0; font-size: var(--t-md); line-height: 1.4; overflow-wrap: anywhere; }
+.kb-tags { display: flex; flex-wrap: wrap; gap: var(--s1); flex: 1 1 auto; min-width: 0; }
+.kb-tags .tag { height: 18px; font-size: var(--t-xs); }
+.kb-parent { text-decoration: none; }
+.kb-none { color: var(--ink-3); font-size: var(--t-sm); padding: var(--s1); }
+@media (max-width: 640px) { .kb { grid-auto-flow: row; grid-auto-columns: auto; overflow-x: visible; } }
+.kb-card[draggable="true"] { cursor: grab; }
+.kb-card.dragging { opacity: 0.45; }
+.kb-col.drop { border-color: var(--accent); background: var(--accent-wash); }
+.kb-foot { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: var(--s2); margin-top: var(--s1); }
+.kb-move { flex: none; max-width: 96px; height: 22px; font: inherit; font-size: var(--t-xs); color: var(--ink-2); background: var(--panel-2); border: 1px solid var(--line-2); border-radius: var(--r-sm); padding: 0 2px; margin-left: auto; }
+.kb-note { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2); margin: 0 0 var(--s3); font-size: var(--t-sm); }

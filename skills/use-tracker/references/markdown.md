@@ -119,7 +119,7 @@ the Bases engine (seen on 1.15.0) shaped the file:
 
 ## Dashboard
 
-The orchestrate dashboard's Overview has a Tickets card for this adapter: per project folder, the count per `state` and the tickets in `started` or `review`, linked through `link`. It reads `tracker.py projects`, which lists the project folders and the board's link (null without `<root>/Board.base`).
+The orchestrate dashboard's Overview has a Tickets card for this adapter: per project folder, the count per `state` and the tickets in `started` or `review`, linked through `link`. Its Tickets page shows every ticket as a kanban by `state`. Both read `tracker.py board`: the project folders and the board's link (null without `<root>/Board.base`), every ticket file `Board.base` shows (one with a `state`, whatever the state), in its order (folder, then number), and under `skipped` each file the adapter cannot read, so one bad file does not hide the rest. A move on the page is `tracker.py set-state ID --from S --to S`: unlike `transition` it goes any way (back out of `completed` too, into a state this adapter does not know), changes only `state` and `updated_at`, and refuses under the lock when the ticket is no longer in `S`.
 
 ## Errors
 

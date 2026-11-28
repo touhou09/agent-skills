@@ -772,6 +772,60 @@ class MarkdownCli(unittest.TestCase):
         self.env.config({"tracker": {"adapter": "linear"}})
         self.assertIn("projects", self.fail("projects"))
 
+    def test_board_lists_what_board_base_shows(self):
+        for title in ("one", "two"):
+            self.ok("create", "--project", "abc", "--title", title, "--body-file", self.body, "--label", "x")
+        self.ok("create", "--project", "acme", "--title", "child", "--body-file", self.body, "--parent", "ABC-1")
+        self.write("abc/ABC-10.md", "---\ntitle: ten\nstate: blocked\n---\n")  # a state this adapter does not know
+        self.write("abc/ABC-3.md", "---\ntitle: no state\n---\n")  # Board.base: file.hasProperty("state")
+        self.write("abc/ABC-7.md", "---\ntitle: empty state\nstate:\n---\n")  # has the property, with no value
+        self.write("abc/ABC-4.md", "no frontmatter\n")
+        for other in ("abc/notes-1.md", "abc/abc-5.md", "abc/ACME-6.md", "Board.base"):
+            self.write(other, "---\ntitle: t\nstate: started\n---\n")
+        out = self.ok("board")
+        self.assertEqual([p["name"] for p in out["projects"]], ["abc", "acme"])
+        self.assertTrue(out["board"].endswith("/Board.base"))
+        # Board.base order: project folder, then the number (ABC-10 after ABC-2).
+        self.assertEqual([(t["id"], t["project"], t["state"]) for t in out["tickets"]],
+                         [("ABC-1", "abc", "backlog"), ("ABC-2", "abc", "backlog"), ("ABC-7", "abc", ""), ("ABC-10", "abc", "blocked"),
+                          ("ACME-1", "acme", "backlog")])
+        one, child = out["tickets"][0], out["tickets"][4]
+        self.assertEqual((one["title"], one["labels"], one["parent"]), ("one", ["x"], None))
+        self.assertTrue(one["updated_at"].endswith("Z") and one["url"].endswith("/abc/ABC-1.md"), one)
+        self.assertEqual(child["parent"], "ABC-1")
+        self.assertEqual([s["file"] for s in out["skipped"]], [os.path.join("abc", "ABC-4.md")])
+        self.env.config({"tracker": {"adapter": "linear"}})
+        self.assertIn("only the markdown adapter", self.fail("board"))
+
+    def test_set_state_moves_any_way_only_from_the_state_seen(self):
+        self.ok("create", "--project", "abc", "--title", "t", "--body-file", self.body, "--label", "x")
+        self.ok("transition", "ABC-1", "--to", "completed")
+        before = self.read("abc", "ABC-1.md")
+        # The board's move: back out of a closed state too, unlike transition.
+        out = self.ok("set-state", "ABC-1", "--from", "completed", "--to", "backlog")
+        self.assertEqual(out, {"ok": True, "op": "set-state", "id": "ABC-1", "from": "completed", "state": "backlog"})
+        after = self.read("abc", "ABC-1.md")
+        changed = [(a, b) for a, b in zip(before.splitlines(), after.splitlines()) if a != b]
+        # updated_at too, unless both writes fell in the same second
+        self.assertIn([b.split(":")[0] for _, b in changed], (["state", "updated_at"], ["state"]), changed)
+        self.assertIn('state: "backlog"', after)
+        # Someone moved it meanwhile: refused, the file untouched, the message names what it is now.
+        err = self.fail("set-state", "ABC-1", "--from", "completed", "--to", "started")
+        self.assertIn("backlog", err)
+        self.assertEqual(self.read("abc", "ABC-1.md"), after)
+        # A state this adapter does not know, in and out (the board shows such columns).
+        self.ok("set-state", "ABC-1", "--from", "backlog", "--to", "blocked")
+        self.ok("set-state", "ABC-1", "--from", "blocked", "--to", "started")
+        self.assertIn('state: "started"', self.read("abc", "ABC-1.md"))
+        self.ok("set-state", "ABC-1", "--from", "started", "--to", "In Progress")  # a state Obsidian users type
+        self.assertIn('state: "In Progress"', self.read("abc", "ABC-1.md"))
+        self.ok("set-state", "ABC-1", "--from", "In Progress", "--to", "started")
+        self.assertIn("bad", self.fail("set-state", "ABC-1", "--from", "started", "--to", "bad\nstate"))
+        self.assertIn("state", self.fail("set-state", "ABC-1", "--from", "started", "--to", " started"))
+        self.assertIn("ABC-9", self.fail("set-state", "ABC-9", "--from", "started", "--to", "backlog"))
+        self.env.config({"tracker": {"adapter": "linear"}})
+        self.assertIn("only the markdown adapter", self.fail("set-state", "ABC-1", "--from", "started", "--to", "backlog"))
+
     def test_errors_name_the_problem(self):
         self.assertIn("../x", self.fail("create", "--project", "../x", "--title", "t", "--body-file", self.body))
         self.assertIn("../ABC-1", self.fail("get", "../ABC-1"))

@@ -52,6 +52,7 @@ const ICON = {
   chat: '<path d="M2.2 3h11.6v7.6H7.4L4.2 13.4v-2.8H2.2Z"/>',
   copy: '<rect x="5.2" y="5.2" width="8.6" height="8.6" rx="1.4"/><path d="M10.8 5.2V3.6a1.4 1.4 0 0 0-1.4-1.4H3.6a1.4 1.4 0 0 0-1.4 1.4v5.8a1.4 1.4 0 0 0 1.4 1.4h1.6"/>',
   send: '<path d="M14 2 7.2 8.8M14 2 9.6 14l-2.4-5.2L2 6.4Z"/>',
+  kanban: '<rect x="2" y="2.5" width="3.2" height="11" rx="1"/><rect x="6.4" y="2.5" width="3.2" height="7" rx="1"/><rect x="10.8" y="2.5" width="3.2" height="9" rx="1"/>',
   fleet: '<circle cx="8" cy="3.5" r="1.8"/><circle cx="3.5" cy="12.5" r="1.8"/><circle cx="12.5" cy="12.5" r="1.8"/><path d="M8 5.3V8M3.5 10.7V8h9v2.7"/>',
 };
 
@@ -1097,7 +1098,7 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) poll
 setInterval(pollState, POLL_MS);
 setInterval(() => { if (isFleet() && BRIEF_FED.includes(S.section) && !document.hidden) pollBrief(); }, POLL_MS);
 // The fleet poll skips rendering while sessions are unchanged, so the Overview's Tickets card keeps its own clock.
-setInterval(() => { if (isFleet() && S.section === "overview" && !document.hidden) pollTickets(); }, 20e3);
+setInterval(() => { if (isFleet() && ["overview", "tickets"].includes(S.section) && !document.hidden) pollTickets(); }, POLL_MS);
 setInterval(() => { if (isFleet() && S.section === "sent" && !document.hidden) pollSent(); }, POLL_MS);
 // Its own timer: pollState skips the render when the fleet is unchanged, and the pressure round records regardless.
 setInterval(() => { if (isFleet() && S.section === "overview" && !document.hidden) pollPressure(); }, POLL_MS);
