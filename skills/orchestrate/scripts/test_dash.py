@@ -265,6 +265,18 @@ resolved, dash.fleet.gate_resolve = [], lambda *a: resolved.append(a) or (200, {
 body = json.dumps({"gate": "g1", "option": "land"}).encode()
 assert post({"Host": host}, "/api/fleet/gate") == 403 and resolved == []
 assert post({"Host": host, "X-Dash-Token": dash.TOKEN}, "/api/fleet/gate") == 200 and resolved == [(None, "g1", "land")], resolved
+# A ticket move on the Tickets page writes behind the same guard.
+moved, real_move = [], dash.ticket_move
+dash.ticket_move = lambda b: moved.append(b) or (200, {"ok": True})
+body = json.dumps({"id": "ABC-1", "from": "backlog", "to": "started"}).encode()
+assert post({"Host": host}, "/api/fleet/tickets/state") == 403
+assert post({"Host": host, "Origin": "http://evil.example", "X-Dash-Token": dash.TOKEN}, "/api/fleet/tickets/state") == 403
+assert moved == []
+assert post({"Host": host, "X-Dash-Token": dash.TOKEN}, "/api/fleet/tickets/state") == 200
+assert moved == [{"id": "ABC-1", "from": "backlog", "to": "started"}], moved
+dash.ticket_move = lambda b: (409, {"ok": False, "reason": "now completed"})
+assert post({"Host": host, "X-Dash-Token": dash.TOKEN}, "/api/fleet/tickets/state") == 409
+dash.ticket_move = real_move
 # PC load: pressure.py's history of the demo's seeded rounds, through the route; a missing script is an error row.
 pr = json.loads(urllib.request.urlopen(f"{base}/api/fleet/pressure?hours=24").read())
 assert pr["hours"] == 24 and len(pr["series"]) > 400 and pr["last"]["level"] == "warn", {k: pr.get(k) for k in ("hours", "last")}
@@ -673,6 +685,18 @@ assert "ABC-7" not in sum(cols.values(), []) and cols["started"] == ["ABC-2"], c
 rep = dash.tickets_report(config=str(tcfg))  # one unreadable file is named, and the others still show
 assert [s["file"] for s in rep["skipped"]] == ["abc/ABC-1.md"] and "error" not in rep, rep
 assert "ABC-1" not in [t["id"] for c in rep["columns"] for t in c["tickets"]] and rep["columns"][0]["tickets"], rep
+# A move on the page: only to a column the page shows, only from the state the page saw; Undo is the same call back.
+before = (tix / "vault" / "abc" / "ABC-2.md").read_text()
+assert dash.ticket_move({"id": "ABC-2", "from": "started", "to": "completed"}, config=str(tcfg)) == (200, {"ok": True, "id": "ABC-2", "from": "started", "state": "completed"})
+assert 'state: "completed"' in (tix / "vault" / "abc" / "ABC-2.md").read_text()
+code, out = dash.ticket_move({"id": "ABC-2", "from": "started", "to": "backlog"}, config=str(tcfg))
+assert code == 409 and not out["ok"] and "completed" in out["reason"], out  # changed meanwhile: the page says so
+assert dash.ticket_move({"id": "ABC-2", "from": "completed", "to": "started"}, config=str(tcfg))[0] == 200  # Undo
+assert [l for l in (tix / "vault" / "abc" / "ABC-2.md").read_text().splitlines() if not l.startswith("updated_at")] == \
+    [l for l in before.splitlines() if not l.startswith("updated_at")]
+code, out = dash.ticket_move({"id": "ABC-2", "from": "started", "to": "todo"}, config=str(tcfg))
+assert code == 400 and "todo" in out["reason"], out  # not a column on the page
+assert dash.ticket_move({"id": "ABC-2", "from": "started"}, config=str(tcfg))[0] == 400
 tcfg.write_text(json.dumps({"tracker": {"adapter": "linear"}}))
 assert dash.tickets_report(config=str(tcfg)) == {"unsupported": True}
 os.environ.update(demo_env)

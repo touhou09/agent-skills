@@ -797,6 +797,31 @@ class MarkdownCli(unittest.TestCase):
         self.env.config({"tracker": {"adapter": "linear"}})
         self.assertIn("only the markdown adapter", self.fail("board"))
 
+    def test_set_state_moves_any_way_only_from_the_state_seen(self):
+        self.ok("create", "--project", "abc", "--title", "t", "--body-file", self.body, "--label", "x")
+        self.ok("transition", "ABC-1", "--to", "completed")
+        before = self.read("abc", "ABC-1.md")
+        # The board's move: back out of a closed state too, unlike transition.
+        out = self.ok("set-state", "ABC-1", "--from", "completed", "--to", "backlog")
+        self.assertEqual(out, {"ok": True, "op": "set-state", "id": "ABC-1", "from": "completed", "state": "backlog"})
+        after = self.read("abc", "ABC-1.md")
+        changed = [(a, b) for a, b in zip(before.splitlines(), after.splitlines()) if a != b]
+        # updated_at too, unless both writes fell in the same second
+        self.assertIn([b.split(":")[0] for _, b in changed], (["state", "updated_at"], ["state"]), changed)
+        self.assertIn('state: "backlog"', after)
+        # Someone moved it meanwhile: refused, the file untouched, the message names what it is now.
+        err = self.fail("set-state", "ABC-1", "--from", "completed", "--to", "started")
+        self.assertIn("backlog", err)
+        self.assertEqual(self.read("abc", "ABC-1.md"), after)
+        # A state this adapter does not know, in and out (the board shows such columns).
+        self.ok("set-state", "ABC-1", "--from", "backlog", "--to", "blocked")
+        self.ok("set-state", "ABC-1", "--from", "blocked", "--to", "started")
+        self.assertIn('state: "started"', self.read("abc", "ABC-1.md"))
+        self.assertIn("bad state", self.fail("set-state", "ABC-1", "--from", "started", "--to", "bad state"))
+        self.assertIn("ABC-9", self.fail("set-state", "ABC-9", "--from", "started", "--to", "backlog"))
+        self.env.config({"tracker": {"adapter": "linear"}})
+        self.assertIn("only the markdown adapter", self.fail("set-state", "ABC-1", "--from", "started", "--to", "backlog"))
+
     def test_errors_name_the_problem(self):
         self.assertIn("../x", self.fail("create", "--project", "../x", "--title", "t", "--body-file", self.body))
         self.assertIn("../ABC-1", self.fail("get", "../ABC-1"))

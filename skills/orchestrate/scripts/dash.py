@@ -1420,6 +1420,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             written, refused = (acks.write if path.endswith("ack") else board.close)(body["ids"][:500], undo=body.get("undo") is True)
             FLEET_WAKE.set()
             return self.send(200, json.dumps({"written": written, "refused": refused}).encode())
+        elif path == "/api/fleet/tickets/state":
+            code, out = ticket_move(body)
+            return self.send(code, json.dumps(out, ensure_ascii=False).encode())
         elif path == "/api/fleet/send" and isinstance(body.get("session"), str) and isinstance(body.get("text"), str):
             handle = body.get("handle") if isinstance(body.get("handle"), str) else None
             code, out = fleet.send(body["session"], body["text"], handle)
@@ -1776,6 +1779,26 @@ def tickets_report(config=None):
 
 
 TICKETS = {"at": 0.0, "body": b""}
+
+
+def ticket_move(body, config=None):
+    """The Tickets page's move, {id, from, to} -> (HTTP code, reply). `to` must be a column the page shows (not the
+    empty state's); the write is `tracker.py set-state`, which refuses when the ticket is no longer in `from`."""
+    if not all(isinstance(body.get(k), str) for k in ("id", "from", "to")):
+        return 400, {"ok": False, "reason": "id, from and to are required"}
+    rep = tickets_report(config)
+    if rep.get("unsupported") or rep.get("error"):
+        return 409, {"ok": False, "reason": rep.get("error") or "only the markdown tracker moves tickets"}
+    if body["to"] not in [c["state"] for c in rep["columns"] if c["state"]]:
+        return 400, {"ok": False, "reason": f"{body['to']!r} is not a column on the Tickets page"}
+    cmd = [sys.executable, str(tracker_path())] + (["--config", config] if config else [])
+    try:
+        out = sh(cmd + ["set-state", body["id"], "--from", body["from"], "--to", body["to"]], timeout=20)
+    except SourceError as e:
+        return 409, {"ok": False, "reason": str(e).removeprefix("tracker: error: ")}
+    finally:
+        TICKETS["at"] = 0.0  # the next poll reads the folder again, whatever happened
+    return 200, {"ok": True, "id": out["id"], "from": out["from"], "state": out["state"]}
 
 
 def tickets_cached():

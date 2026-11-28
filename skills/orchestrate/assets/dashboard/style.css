@@ -640,8 +640,14 @@ table.sent details > summary { cursor: pointer; max-width: 720px; }
 .kb-card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--s2) var(--s3); min-width: 0; }
 .kb-top { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0 var(--s2); white-space: nowrap; font-size: var(--t-sm); color: var(--ink-3); }
 .kb-title { margin: 2px 0; font-size: var(--t-md); line-height: 1.4; overflow-wrap: anywhere; }
-.kb-tags { display: flex; flex-wrap: wrap; gap: var(--s1); margin-top: var(--s1); }
+.kb-tags { display: flex; flex-wrap: wrap; gap: var(--s1); flex: 1 1 auto; min-width: 0; }
 .kb-tags .tag { height: 18px; font-size: var(--t-xs); }
 .kb-parent { text-decoration: none; }
 .kb-none { color: var(--ink-3); font-size: var(--t-sm); padding: var(--s1); }
 @media (max-width: 640px) { .kb { grid-auto-flow: row; grid-auto-columns: auto; overflow-x: visible; } }
+.kb-card[draggable="true"] { cursor: grab; }
+.kb-card.dragging { opacity: 0.45; }
+.kb-col.drop { border-color: var(--accent); background: var(--accent-wash); }
+.kb-foot { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: var(--s2); margin-top: var(--s1); }
+.kb-move { flex: none; max-width: 96px; height: 22px; font: inherit; font-size: var(--t-xs); color: var(--ink-2); background: var(--panel-2); border: 1px solid var(--line-2); border-radius: var(--r-sm); padding: 0 2px; margin-left: auto; }
+.kb-note { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2); margin: 0 0 var(--s3); font-size: var(--t-sm); }

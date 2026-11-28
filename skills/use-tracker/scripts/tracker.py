@@ -11,6 +11,7 @@ Markdown folder (one file per ticket, one subfolder per project).
     tracker.py [...] transition ID --to started|review|completed|canceled
     tracker.py [...] projects                       (markdown only: project folders and the Obsidian board)
     tracker.py [...] board                          (markdown only: projects plus every ticket Board.base shows)
+    tracker.py [...] set-state ID --from S --to S   (markdown only: the board's move, any state, only from S)
 
 stdout is always JSON; errors go to stderr with a non-zero exit.
 TRACKER_FIXTURES=<dir> serves list/get from <dir>/issues.json and refuses writes.
@@ -627,6 +628,7 @@ class JiraAdapter:
 # One Markdown file per ticket: <root>/<project>/<KEY>-<n>.md, KEY being the folder name in capitals.
 # The frontmatter carries the fields; the body is the description, then an optional "## Comments" section.
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+STATE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 TICKET_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*-\d+$")
 MD_STATE_TYPE = {"triage": "triage", "backlog": "backlog", "todo": "unstarted", "started": "started",
                  "review": "started", "completed": "completed", "canceled": "canceled"}
@@ -763,7 +765,7 @@ class MarkdownAdapter:
         return [t for p in sorted(os.listdir(self.root)) if NAME.match(p) and os.path.isdir(os.path.join(self.root, p))
                 for t in self._tickets(os.path.join(self.root, p))]
 
-    def _update(self, issue_id, change):
+    def _update(self, issue_id, change, any_state=False):
         """Read, change and rewrite one ticket under a lock, replacing the file whole.
         `change` returns None to leave the file as it is."""
         import fcntl  # Unix only; imported here so the other adapters still run without it
@@ -771,7 +773,8 @@ class MarkdownAdapter:
         # ponytail: one lock for the whole root; per-ticket locks if many workers write at once.
         with open(os.path.join(self.root, ".tracker.lock"), "w") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            changed = change(*self._read(path))
+            with open(path, encoding="utf-8") as fh:
+                changed = change(*parse_ticket(path, fh.read(), any_state))
             if changed is None:
                 return
             meta, body = changed
@@ -863,6 +866,19 @@ class MarkdownAdapter:
         self._update(issue_id, add)
         return {"ok": True, "op": "comment", "id": issue_id}
 
+    def set_state(self, issue_id, expect, target):
+        """The board's move: any state to any other, back out of a closed one too (transition only moves forward).
+        Refused when the ticket is no longer in `expect`; only `state` and `updated_at` change."""
+        self._check(target, STATE_NAME, "state")
+
+        def move(meta, body):
+            now = "" if meta.get("state") is None else str(meta["state"])
+            if now != expect:
+                raise TrackerError(f"{issue_id} is {now or 'without a state'} now, not {expect}: it changed meanwhile")
+            return None if now == target else (dict(meta, state=target), body)
+        self._update(issue_id, move, any_state=True)
+        return {"ok": True, "op": "set-state", "id": issue_id, "from": expect, "state": target}
+
     def transition(self, issue_id, target):
         closed = {f"{target}_at": now_z()} if target in ("completed", "canceled") else {}
         seen = {}
@@ -925,6 +941,10 @@ def build_parser():
     s.add_argument("--to", required=True, choices=TRANSITION_TARGETS)
     sub.add_parser("projects")
     sub.add_parser("board")
+    s = sub.add_parser("set-state")
+    s.add_argument("id")
+    s.add_argument("--from", dest="expect", required=True)
+    s.add_argument("--to", required=True)
     return p
 
 
@@ -940,6 +960,10 @@ def run(argv):
         if not hasattr(adapter, "board"):
             raise TrackerError("board: only the markdown adapter lists every ticket")
         return adapter.board()
+    if args.cmd == "set-state":
+        if not hasattr(adapter, "set_state"):
+            raise TrackerError("set-state: only the markdown adapter moves a ticket to any state")
+        return adapter.set_state(args.id, args.expect, args.to)
     if args.cmd == "list":
         if args.limit is not None and args.limit < 1:
             raise TrackerError("--limit must be >= 1")
